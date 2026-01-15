@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Privacy-first speed reading platform (RSVP / Spritz-style) with a personal library, notes, and local storage." />
+    <title>SwiftReader</title>
+
+    <link rel="icon" href="./favicon.ico" />
+    <link rel="stylesheet" href="./styles.css" />
+
+    <!-- Open Graph (optional, safe on GitHub Pages) -->
+    <meta property="og:title" content="SwiftReader" />
+    <meta property="og:description" content="Read faster with RSVP. Keep your library and notes locally." />
+    <meta property="og:type" content="website" />
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="app-header" role="banner">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">SR</div>
+        <div class="brand-text">
+          <div class="brand-name">SwiftReader</div>
+          <div class="brand-tagline">Privacy-first speed reading platform</div>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <button id="theme-toggle" class="btn btn-ghost" type="button" aria-label="Toggle theme">
+          <span class="icon" aria-hidden="true">☾</span>
+          <span class="btn-text">Theme</span>
+        </button>
+
+        <button id="help-btn" class="btn btn-ghost" type="button" aria-haspopup="dialog" aria-controls="modal-help">
+          <span class="icon" aria-hidden="true">?</span>
+          <span class="btn-text">Help</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="app-shell">
+      <nav class="sidebar" aria-label="Primary">
+        <div class="sidebar-top">
+          <button id="nav-library" class="nav-item is-active" type="button" data-view="library" aria-current="page">
+            <span class="nav-icon" aria-hidden="true">📚</span>
+            <span class="nav-label">Library</span>
+          </button>
+
+          <button id="nav-reader" class="nav-item" type="button" data-view="reader">
+            <span class="nav-icon" aria-hidden="true">⚡</span>
+            <span class="nav-label">Reader</span>
+          </button>
+
+          <button id="nav-notes" class="nav-item" type="button" data-view="notes">
+            <span class="nav-icon" aria-hidden="true">📝</span>
+            <span class="nav-label">Notes</span>
+          </button>
+
+          <button id="nav-settings" class="nav-item" type="button" data-view="settings">
+            <span class="nav-icon" aria-hidden="true">⚙️</span>
+            <span class="nav-label">Settings</span>
+          </button>
+        </div>
+
+        <div class="sidebar-bottom">
+          <div class="mini-card">
+            <div class="mini-title">Local-first</div>
+            <div class="mini-text">
+              Your books & notes stay on your device. No tracking.
+            </div>
+          </div>
+
+          <button id="export-btn" class="btn btn-secondary btn-block" type="button">
+            Export Data
+          </button>
+          <button id="import-data-btn" class="btn btn-ghost btn-block" type="button">
+            Import Data
+          </button>
+        </div>
+      </nav>
+
+      <main id="main" class="main" role="main" tabindex="-1">
+        <!-- =========================
+             LIBRARY VIEW
+        ========================== -->
+        <section id="view-library" class="view is-active" data-view="library" aria-label="Library">
+          <div class="view-header">
+            <div>
+              <h1 class="h1">Library</h1>
+              <p class="subtle">Import files, paste text, organize your books, and continue where you left off.</p>
+            </div>
+
+            <div class="view-header-actions">
+              <button id="add-book-btn" class="btn btn-primary" type="button">
+                <span class="icon" aria-hidden="true">＋</span>
+                Add Book
+              </button>
+            </div>
+          </div>
+
+          <div class="grid grid-2">
+            <section class="card" aria-label="Import">
+              <div class="card-header">
+                <h2 class="h2">Import</h2>
+                <div class="chip">Local-only</div>
+              </div>
+
+              <div class="card-body">
+                <div class="import-tabs" role="tablist" aria-label="Import options">
+                  <button class="tab is-active" id="tab-file" role="tab" aria-selected="true" aria-controls="panel-file" type="button">
+                    File
+                  </button>
+                  <button class="tab" id="tab-paste" role="tab" aria-selected="false" aria-controls="panel-paste" type="button">
+                    Paste
+                  </button>
+                </div>
+
+                <div id="panel-file" class="tab-panel is-active" role="tabpanel" aria-labelledby="tab-file">
+                  <div class="file-drop" id="file-drop" tabindex="0" role="button" aria-label="Drop files here or choose files">
+                    <div class="file-drop-inner">
+                      <div class="file-drop-title">Drop a file here</div>
+                      <div class="file-drop-sub">
+                        Supported soon: <strong>PDF</strong>, <strong>EPUB</strong>, <strong>TXT</strong>
+                      </div>
+                      <div class="file-drop-actions">
+                        <label class="btn btn-secondary" for="file-input">
+                          Choose File
+                        </label>
+                        <input id="file-input" class="sr-only" type="file" multiple
+                          accept=".txt,.md,.epub,.pdf,application/pdf,application/epub+zip,text/plain" />
+                        <button id="demo-load-btn" class="btn btn-ghost" type="button">Load Demo Text</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-row">
+                    <label class="label" for="import-title">Title (optional)</label>
+                    <input id="import-title" class="input" type="text" placeholder="e.g., Atomic Habits" autocomplete="off" />
+                  </div>
+
+                  <div class="form-row">
+                    <label class="label" for="import-author">Author (optional)</label>
+                    <input id="import-author" class="input" type="text" placeholder="e.g., James Clear" autocomplete="off" />
+                  </div>
+
+                  <div class="form-row">
+                    <label class="label" for="import-tags">Tags (comma separated)</label>
+                    <input id="import-tags" class="input" type="text" placeholder="productivity, habits" autocomplete="off" />
+                  </div>
+
+                  <div class="inline-actions">
+                    <button id="import-confirm-btn" class="btn btn-primary" type="button">
+                      Add to Library
+                    </button>
+                    <button id="import-clear-btn" class="btn btn-ghost" type="button">
+                      Clear
+                    </button>
+                  </div>
+
+                  <div class="hint">
+                    Tip: For V1 reliability on GitHub Pages, start with <strong>TXT</strong> and <strong>Paste</strong>.
+                    We’ll add EPUB/PDF with robust parsing next.
+                  </div>
+                </div>
+
+                <div id="panel-paste" class="tab-panel" role="tabpanel" aria-labelledby="tab-paste" hidden>
+                  <div class="form-row">
+                    <label class="label" for="paste-text">Paste text</label>
+                    <textarea id="paste-text" class="textarea" rows="10" placeholder="Paste any article or book excerpt here..."></textarea>
+                  </div>
+
+                  <div class="form-row">
+                    <label class="label" for="paste-title">Title</label>
+                    <input id="paste-title" class="input" type="text" placeholder="e.g., Notes on Focus" autocomplete="off" />
+                  </div>
+
+                  <div class="inline-actions">
+                    <button id="paste-add-btn" class="btn btn-primary" type="button">Add to Library</button>
+                    <button id="paste-clear-btn" class="btn btn-ghost" type="button">Clear</button>
+                  </div>
+
+                  <div class="hint">
+                    Your pasted text stays only in your browser storage (unless you export).
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card" aria-label="Library list">
+              <div class="card-header">
+                <h2 class="h2">Your books</h2>
+                <div class="card-header-actions">
+                  <div class="search">
+                    <span class="search-icon" aria-hidden="true">⌕</span>
+                    <input id="library-search" class="search-input" type="search" placeholder="Search title, author, tags…" />
+                  </div>
+                  <select id="library-sort" class="select" aria-label="Sort books">
+                    <option value="recent">Recently opened</option>
+                    <option value="added">Recently added</option>
+                    <option value="title">Title (A–Z)</option>
+                    <option value="author">Author (A–Z)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="card-body">
+                <div id="library-empty" class="empty-state">
+                  <div class="empty-title">No books yet</div>
+                  <div class="empty-text">
+                    Import a file or paste text to create your first book.
+                  </div>
+                </div>
+
+                <ul id="book-list" class="book-list" aria-label="Books list">
+                  <!-- JS will render book cards here -->
+                  <!--
+                  <li class="book-item">
+                    <button class="book-card" type="button">
+                      <div class="book-meta">
+                        <div class="book-title">Example Book</div>
+                        <div class="book-sub">Author • 12 min read</div>
+                        <div class="book-tags">
+                          <span class="tag">habits</span>
+                          <span class="tag">focus</span>
+                        </div>
+                      </div>
+                      <div class="book-progress">
+                        <div class="progress-label">34%</div>
+                        <div class="progress-bar"><div class="progress-fill" style="width:34%"></div></div>
+                      </div>
+                    </button>
+                  </li>
+                  -->
+                </ul>
+              </div>
+
+              <div class="card-footer">
+                <div class="subtle">Storage: <span id="storage-estimate">—</span></div>
+                <button id="danger-reset-btn" class="btn btn-danger btn-sm" type="button">
+                  Reset Local Data
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- =========================
+             READER VIEW
+        ========================== -->
+        <section id="view-reader" class="view" data-view="reader" aria-label="Reader" hidden>
+          <div class="view-header">
+            <div>
+              <h1 class="h1">Reader</h1>
+              <p class="subtle">
+                One-word-at-a-time RSVP with a fixed pivot letter (red). Tune speed, pauses, and focus.
+              </p>
+            </div>
+
+            <div class="view-header-actions">
+              <button id="open-library-btn" class="btn btn-secondary" type="button">
+                Open Library
+              </button>
+            </div>
+          </div>
+
+          <div class="reader-shell">
+            <section class="card reader-stage" aria-label="Reading stage">
+              <div class="card-header reader-stage-header">
+                <div class="reader-book">
+                  <div id="reader-book-title" class="reader-book-title">No book selected</div>
+                  <div id="reader-book-sub" class="reader-book-sub subtle">Choose a book from Library</div>
+                </div>
+
+                <div class="reader-stage-actions">
+                  <div class="pill" id="reader-wpm-pill" title="Words per minute">
+                    <span class="pill-label">WPM</span>
+                    <span class="pill-value" id="wpm-value">300</span>
+                  </div>
+                  <div class="pill" id="reader-progress-pill" title="Progress">
+                    <span class="pill-label">Progress</span>
+                    <span class="pill-value" id="reader-progress">0%</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-body reader-stage-body">
+                <div class="rsvp-frame" aria-label="RSVP word display">
+                  <div class="pivot-line" aria-hidden="true"></div>
+
+                  <!-- The word renderer: left / pivot / right aligned around pivot line -->
+                  <div id="rsvp-word" class="rsvp-word" role="status" aria-live="polite" aria-atomic="true">
+                    <span class="rsvp-left" id="rsvp-left">Ready</span>
+                    <span class="rsvp-pivot" id="rsvp-pivot">•</span>
+                    <span class="rsvp-right" id="rsvp-right">Set</span>
+                  </div>
+
+                  <div id="rsvp-subline" class="rsvp-subline subtle" aria-hidden="true">
+                    Tap space / play to start
+                  </div>
+                </div>
+
+                <div class="reader-controls" aria-label="Reader controls">
+                  <button id="btn-back-sent" class="btn btn-ghost" type="button" title="Back sentence">
+                    ⟲ Sent
+                  </button>
+                  <button id="btn-back" class="btn btn-ghost" type="button" title="Back 3 words">
+                    ⟲ 3
+                  </button>
+
+                  <button id="btn-play" class="btn btn-primary btn-wide" type="button" aria-pressed="false">
+                    ▶ Play
+                  </button>
+
+                  <button id="btn-forward" class="btn btn-ghost" type="button" title="Forward 3 words">
+                    3 ⟳
+                  </button>
+                  <button id="btn-forward-sent" class="btn btn-ghost" type="button" title="Forward sentence">
+                    Sent ⟳
+                  </button>
+                </div>
+
+                <div class="reader-sliders" aria-label="Speed and pause controls">
+                  <div class="slider-row">
+                    <label class="label" for="wpm-slider">Speed (WPM)</label>
+                    <input id="wpm-slider" class="range" type="range" min="150" max="1200" value="300" step="10" />
+                    <div class="slider-meta">
+                      <span class="subtle">150</span>
+                      <span class="subtle">1200</span>
+                    </div>
+                  </div>
+
+                  <div class="slider-row">
+                    <label class="label" for="pause-slider">Punctuation pauses</label>
+                    <input id="pause-slider" class="range" type="range" min="0" max="200" value="80" step="5" />
+                    <div class="slider-meta">
+                      <span class="subtle">None</span>
+                      <span class="subtle">More</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="reader-stats" aria-label="Session stats">
+                  <div class="stat">
+                    <div class="stat-label">Session</div>
+                    <div id="stat-session" class="stat-value">00:00</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">Words</div>
+                    <div id="stat-words" class="stat-value">0</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">Avg WPM</div>
+                    <div id="stat-avgwpm" class="stat-value">—</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">Pauses</div>
+                    <div id="stat-pauses" class="stat-value">0</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-footer reader-footer">
+                <div class="subtle">
+                  Shortcuts: <kbd>Space</kbd> play/pause • <kbd>←</kbd>/<kbd>→</kbd> step • <kbd>↑</kbd>/<kbd>↓</kbd> speed
+                </div>
+
+                <div class="inline-actions">
+                  <button id="btn-mark" class="btn btn-secondary" type="button">Bookmark</button>
+                  <button id="btn-add-note" class="btn btn-secondary" type="button">Add Note</button>
+                </div>
+              </div>
+            </section>
+
+            <aside class="card reader-side" aria-label="Context & notes">
+              <div class="card-header">
+                <h2 class="h2">Notes</h2>
+                <div class="chip">Linked to this book</div>
+              </div>
+
+              <div class="card-body">
+                <div class="form-row">
+                  <label class="label" for="quick-note">Quick note</label>
+                  <textarea id="quick-note" class="textarea" rows="5" placeholder="Write a note… (saved locally)"></textarea>
+                </div>
+                <div class="inline-actions">
+                  <button id="save-note-btn" class="btn btn-primary" type="button">Save Note</button>
+                  <button id="clear-note-btn" class="btn btn-ghost" type="button">Clear</button>
+                </div>
+
+                <hr class="divider" />
+
+                <div class="subhead">Saved notes</div>
+                <ul id="note-list" class="note-list" aria-label="Notes list">
+                  <!-- JS renders notes -->
+                </ul>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- =========================
+             NOTES VIEW
+        ========================== -->
+        <section id="view-notes" class="view" data-view="notes" aria-label="Notes" hidden>
+          <div class="view-header">
+            <div>
+              <h1 class="h1">Notes</h1>
+              <p class="subtle">All your notes across books — searchable and exportable.</p>
+            </div>
+          </div>
+
+          <div class="grid grid-2">
+            <section class="card">
+              <div class="card-header">
+                <h2 class="h2">Search</h2>
+                <div class="search">
+                  <span class="search-icon" aria-hidden="true">⌕</span>
+                  <input id="notes-search" class="search-input" type="search" placeholder="Search notes…" />
+                </div>
+              </div>
+
+              <div class="card-body">
+                <div class="subhead">Filters</div>
+                <div class="filters">
+                  <select id="notes-filter-book" class="select" aria-label="Filter by book">
+                    <option value="all">All books</option>
+                  </select>
+                  <select id="notes-sort" class="select" aria-label="Sort notes">
+                    <option value="recent">Most recent</option>
+                    <option value="oldest">Oldest</option>
+                  </select>
+                </div>
+
+                <div id="notes-empty" class="empty-state">
+                  <div class="empty-title">No notes yet</div>
+                  <div class="empty-text">Add notes while reading to see them here.</div>
+                </div>
+
+                <ul id="notes-all-list" class="note-list" aria-label="All notes list"></ul>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-header">
+                <h2 class="h2">Selected note</h2>
+              </div>
+
+              <div class="card-body">
+                <div class="note-preview">
+                  <div id="note-preview-book" class="note-preview-book subtle">—</div>
+                  <div id="note-preview-text" class="note-preview-text">Select a note to view/edit.</div>
+                </div>
+
+                <div class="form-row">
+                  <label class="label" for="note-edit">Edit</label>
+                  <textarea id="note-edit" class="textarea" rows="8" placeholder="Edit the note…"></textarea>
+                </div>
+
+                <div class="inline-actions">
+                  <button id="note-update-btn" class="btn btn-primary" type="button">Update</button>
+                  <button id="note-delete-btn" class="btn btn-danger" type="button">Delete</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- =========================
+             SETTINGS VIEW
+        ========================== -->
+        <section id="view-settings" class="view" data-view="settings" aria-label="Settings" hidden>
+          <div class="view-header">
+            <div>
+              <h1 class="h1">Settings</h1>
+              <p class="subtle">Tune reading experience and privacy options. Everything stays local by default.</p>
+            </div>
+          </div>
+
+          <div class="grid grid-2">
+            <section class="card" aria-label="Reading preferences">
+              <div class="card-header">
+                <h2 class="h2">Reading</h2>
+              </div>
+
+              <div class="card-body">
+                <div class="form-row">
+                  <label class="label" for="default-wpm">Default WPM</label>
+                  <input id="default-wpm" class="input" type="number" min="150" max="1200" step="10" value="300" />
+                </div>
+
+                <div class="form-row">
+                  <label class="label" for="font-size">Font size</label>
+                  <input id="font-size" class="range" type="range" min="22" max="72" value="46" step="1" />
+                </div>
+
+                <div class="form-row">
+                  <label class="label" for="font-family">Font</label>
+                  <select id="font-family" class="select">
+                    <option value="system">System</option>
+                    <option value="serif">Serif</option>
+                    <option value="mono">Monospace</option>
+                  </select>
+                </div>
+
+                <div class="form-row">
+                  <label class="checkbox">
+                    <input id="auto-pause" type="checkbox" checked />
+                    <span>Auto pause on punctuation</span>
+                  </label>
+                </div>
+
+                <div class="form-row">
+                  <label class="checkbox">
+                    <input id="tap-controls" type="checkbox" checked />
+                    <span>Tap controls on mobile (left/back, center/pause, right/forward)</span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <section class="card" aria-label="Privacy and storage">
+              <div class="card-header">
+                <h2 class="h2">Privacy & storage</h2>
+                <div class="chip">No analytics</div>
+              </div>
+
+              <div class="card-body">
+                <div class="notice">
+                  <div class="notice-title">Local storage</div>
+                  <div class="notice-text">
+                    Books and notes are stored in your browser (localStorage / IndexedDB). Export to back up.
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <label class="checkbox">
+                    <input id="remember-last-book" type="checkbox" checked />
+                    <span>Remember last opened book</span>
+                  </label>
+                </div>
+
+                <div class="form-row">
+                  <label class="checkbox">
+                    <input id="encrypt-export" type="checkbox" />
+                    <span>Encrypt export file (optional, later)</span>
+                  </label>
+                </div>
+
+                <div class="inline-actions">
+                  <button id="settings-export-btn" class="btn btn-secondary" type="button">Export</button>
+                  <button id="settings-import-btn" class="btn btn-ghost" type="button">Import</button>
+                </div>
+
+                <hr class="divider" />
+
+                <div class="danger-zone">
+                  <div class="danger-title">Danger zone</div>
+                  <div class="danger-text subtle">Deletes all local data for this site.</div>
+                  <button id="settings-reset-btn" class="btn btn-danger" type="button">Reset all data</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- =========================
+         HELP MODAL (static shell)
+    ========================== -->
+    <div id="modal-help" class="modal" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden>
+      <div class="modal-backdrop" data-close="true"></div>
+      <div class="modal-card" role="document">
+        <div class="modal-header">
+          <h2 id="help-title" class="h2">How it works</h2>
+          <button class="btn btn-ghost btn-icon" type="button" data-close="true" aria-label="Close dialog">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <p>
+            SwiftReader uses <strong>RSVP</strong> (one-word-at-a-time display) with a fixed pivot letter (red)
+            so your eyes don’t jump across lines.
+          </p>
+
+          <ul class="list">
+            <li>Use <kbd>Space</kbd> to play/pause.</li>
+            <li>Use <kbd>←</kbd>/<kbd>→</kbd> to step back/forward.</li>
+            <li>Adjust WPM and punctuation pauses to match the text difficulty.</li>
+          </ul>
+
+          <div class="notice">
+            <div class="notice-title">Privacy</div>
+            <div class="notice-text">No accounts, no tracking. Data stays on-device unless you export.</div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-primary" type="button" data-close="true">Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <footer class="app-footer" role="contentinfo">
+      <div class="subtle">
+        Built for focus • Stored locally • Runs on GitHub Pages
+      </div>
+      <div class="footer-links">
+        <button id="about-btn" class="linklike" type="button">About</button>
+        <button id="shortcuts-btn" class="linklike" type="button">Shortcuts</button>
+      </div>
+    </footer>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>
