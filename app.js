@@ -665,6 +665,8 @@
   let activeModal = null;
   let lastFocusedEl = null;
   let confirmResolver = null;
+  let scrollLocked = false;
+  let scrollLockY = 0;
   let wakeLockHandle = null;
 
   // Reader session runtime
@@ -694,7 +696,19 @@
   /* ---------------------------
      Init
   --------------------------- */
-  void initApp();
+  void (async () => {
+    try {
+      await initApp();
+    } catch (err) {
+      console.error("SwiftReader boot error", err);
+      showToast({
+        title: "SwiftReader failed to start",
+        message: err instanceof Error ? err.message : "Unexpected error during startup.",
+        type: "error",
+        duration: 7000
+      });
+    }
+  })();
 
   async function initApp() {
     await initIndexedDb();
@@ -797,7 +811,7 @@ This is a short demo text. Start at 300 WPM, then increase gradually.
 Notice the red pivot letter: your eyes stay fixed, and comprehension stays smooth.
 
 Try:
-- Space (desktop) or tap Play (mobile) to Play/Pause
+- Tap Play (mobile) or press Space (desktop) to play/pause
 - Arrow keys to step
 - Up/Down to change speed
 - Add a note while reading
@@ -1126,10 +1140,22 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     // Footer optional hooks
     aboutBtn?.addEventListener("click", () => {
-      alert("SwiftReader — local-first speed reading prototype.\n\nNo accounts. No tracking. Data stays in your browser unless you export.");
+      void openConfirm({
+        title: "About SwiftReader",
+        message: "SwiftReader is a local-first speed reading tool. No accounts, no tracking — your data stays in your browser unless you export.",
+        confirmText: "Got it",
+        cancelText: "Close",
+        hideCancel: true
+      });
     });
     shortcutsBtn?.addEventListener("click", () => {
-      alert("Shortcuts (Reader)\n\nSpace (desktop): Play/Pause\nTap Play (mobile): Play/Pause\n← / →: Step word\n↑ / ↓: Speed\n");
+      void openConfirm({
+        title: "Reader shortcuts",
+        message: "Tap Play (mobile) or press Space (desktop) to play/pause.\n← / →: Step word\n↑ / ↓: Change speed",
+        confirmText: "Got it",
+        cancelText: "Close",
+        hideCancel: true
+      });
     });
   }
 
@@ -1226,31 +1252,51 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
   }
 
+  function lockBodyScroll() {
+    if (scrollLocked) return;
+    scrollLocked = true;
+    scrollLockY = window.scrollY || window.pageYOffset || 0;
+    document.body.classList.add("modal-open");
+    document.body.style.top = `-${scrollLockY}px`;
+    document.body.style.position = "fixed";
+    document.body.style.width = "100%";
+  }
+
+  function unlockBodyScroll() {
+    if (!scrollLocked) return;
+    scrollLocked = false;
+    document.body.classList.remove("modal-open");
+    document.body.style.position = "";
+    document.body.style.top = "";
+    document.body.style.width = "";
+    window.scrollTo(0, scrollLockY);
+  }
+
   function openModal(el, opener) {
     if (!el) return;
-    if (activeModal && activeModal !== el) closeModal(activeModal, { restoreFocus: false });
+    if (activeModal && activeModal !== el) closeModal(activeModal, { restoreFocus: false, keepScrollLock: true });
     activeModal = el;
     lastFocusedEl = opener || document.activeElement;
     el.hidden = false;
-    document.body.classList.add("modal-open");
+    lockBodyScroll();
     document.addEventListener("keydown", handleModalKeydown);
     const focusable = getFocusableElements(el);
     const btn = el.querySelector("[data-close='true']") || focusable[0];
     btn?.focus();
   }
 
-  function closeModal(el, { restoreFocus = true } = {}) {
+  function closeModal(el, { restoreFocus = true, keepScrollLock = false } = {}) {
     if (!el) return;
     el.hidden = true;
     if (activeModal === el) {
       activeModal = null;
     }
-    document.body.classList.remove("modal-open");
+    if (!keepScrollLock) unlockBodyScroll();
     document.removeEventListener("keydown", handleModalKeydown);
     if (restoreFocus) lastFocusedEl?.focus?.();
   }
 
-  function openConfirm({ title, message, confirmText = "Confirm", cancelText = "Cancel" } = {}) {
+  function openConfirm({ title, message, confirmText = "Confirm", cancelText = "Cancel", hideCancel = false } = {}) {
     if (!modalConfirm || !confirmOkBtn || !confirmTitle || !confirmMessage || !confirmCancelBtn) {
       showToast({ title: "Confirmation unavailable", message: "Unable to open confirmation dialog.", type: "error" });
       return Promise.resolve(false);
@@ -1259,6 +1305,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     confirmMessage.textContent = message || "Are you sure you want to continue?";
     confirmOkBtn.textContent = confirmText;
     confirmCancelBtn.textContent = cancelText;
+    confirmCancelBtn.hidden = !!hideCancel;
     openModal(modalConfirm, document.activeElement);
     return new Promise(resolve => {
       confirmResolver = resolve;
@@ -1321,15 +1368,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   function applyThemeFromSettings() {
     const theme = state.settings.theme || "system";
     const root = document.documentElement;
+    const themeIcon = themeToggleBtn?.querySelector(".icon");
 
     if (theme === "system") {
       root.removeAttribute("data-theme");
-      themeToggleBtn?.querySelector(".icon")?.textContent = "☾";
+      if (themeIcon) themeIcon.textContent = "☾";
       return;
     }
 
     root.setAttribute("data-theme", theme);
-    themeToggleBtn?.querySelector(".icon")?.textContent = theme === "dark" ? "☾" : "☀";
+    if (themeIcon) themeIcon.textContent = theme === "dark" ? "☾" : "☀";
   }
 
   /* ---------------------------
@@ -1850,7 +1898,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       setRSVPDisplay("Ready", "•", "Set");
       if (readerProgressEl) readerProgressEl.textContent = "0%";
       if (rsvpSubline) {
-        rsvpSubline.textContent = "Tap play (mobile) or press Space (desktop) to start";
+        rsvpSubline.textContent = "Tap Play (mobile) or press Space (desktop) to start";
         rsvpSubline.hidden = false;
       }
       if (btnPlay) btnPlay.disabled = true;
