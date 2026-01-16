@@ -277,15 +277,48 @@
 
           <div class="reader-shell">
             <div class="reader-main">
-              <section class="card reader-page" aria-label="Page view">
+              <section class="card reader-page" aria-label="Document viewer">
                 <div class="card-header reader-page-header">
                   <div>
-                    <h2 class="h2">Page View</h2>
+                    <h2 class="h2">Document Viewer</h2>
                     <div id="page-progress" class="subtle">0% • word 0 / 0</div>
+                  </div>
+                  <div class="viewer-controls" aria-label="Viewer controls">
+                    <div class="viewer-nav">
+                      <button id="pdf-prev-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Previous page">
+                        ◀
+                      </button>
+                      <div class="viewer-page-input">
+                        <label class="sr-only" for="pdf-page-input">Page number</label>
+                        <input id="pdf-page-input" class="input input-xs" type="number" min="1" value="1" inputmode="numeric" />
+                        <span class="viewer-page-total">/ <span id="pdf-page-total">1</span></span>
+                      </div>
+                      <button id="pdf-next-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Next page">
+                        ▶
+                      </button>
+                    </div>
+                    <div class="viewer-zoom">
+                      <button id="pdf-zoom-out" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom out">−</button>
+                      <span id="pdf-zoom-label" class="subtle">100%</span>
+                      <button id="pdf-zoom-in" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom in">＋</button>
+                    </div>
+                    <label class="checkbox viewer-sync">
+                      <input id="sync-rsvp-toggle" type="checkbox" />
+                      <span>Sync RSVP to page</span>
+                    </label>
                   </div>
                 </div>
 
                 <div class="card-body">
+                  <div id="document-viewer" class="document-viewer">
+                    <div id="viewer-status" class="viewer-status subtle">Select a book to view pages.</div>
+                    <div class="viewer-stage">
+                      <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF pages" hidden>
+                        <canvas id="pdf-canvas" class="pdf-canvas"></canvas>
+                      </div>
+                      <div id="epub-viewer" class="epub-viewer" aria-label="EPUB view" hidden></div>
+                    </div>
+                  </div>
                   <div id="page-view" class="page-view" tabindex="0" aria-label="Scrollable page text">
                     <p class="subtle">Select a book to start reading.</p>
                   </div>
@@ -299,13 +332,13 @@
                   <div id="reader-book-sub" class="reader-book-sub subtle">Choose a book from Library</div>
                 </div>
 
-                <div class="reader-stage-actions">
-                  <div class="reader-mode-toggle" role="tablist" aria-label="Reader mode">
-                    <button id="toggle-page" class="segmented is-active" type="button" role="tab" aria-selected="true">
-                      Page
-                    </button>
-                    <button id="toggle-rsvp" class="segmented" type="button" role="tab" aria-selected="false">
-                      RSVP
+                  <div class="reader-stage-actions">
+                    <div class="reader-mode-toggle" role="tablist" aria-label="Reader mode">
+                      <button id="toggle-page" class="segmented is-active" type="button" role="tab" aria-selected="true">
+                      Viewer
+                      </button>
+                      <button id="toggle-rsvp" class="segmented" type="button" role="tab" aria-selected="false">
+                        RSVP
                     </button>
                   </div>
                   <div class="pill" id="reader-wpm-pill" title="Words per minute">
