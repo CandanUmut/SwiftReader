@@ -438,6 +438,11 @@ button, input, textarea, select {
   margin-top: 12px;
 }
 
+.form-helper {
+  margin-top: 6px;
+  font-size: 0.85rem;
+}
+
 /* ---------- Nav ---------- */
 .nav-item {
   width: 100%;

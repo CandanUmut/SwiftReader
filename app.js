@@ -14,6 +14,8 @@
   /* ---------------------------
      Helpers
   --------------------------- */
+  const APP_VERSION = "2.0.0";
+  console.info(`SwiftReader loaded v${APP_VERSION}`);
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const nowISO = () => new Date().toISOString();
@@ -67,6 +69,17 @@
       reader.onload = () => resolve(String(reader.result || ""));
       reader.readAsText(file);
     });
+  }
+
+  async function fileToTextAsync(file) {
+    if (file?.text) {
+      return file.text();
+    }
+    return fileToText(file);
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /* ---------------------------
@@ -148,6 +161,92 @@
   }
 
   /* ---------------------------
+     IndexedDB (idb)
+  --------------------------- */
+  const DB_NAME = "swiftreader_v2";
+  const DB_VERSION = 1;
+  const DB_STORES = {
+    books: "books",
+    contents: "contents",
+    notes: "notes",
+    settings: "settings"
+  };
+
+  let dbPromise = null;
+  let idbReady = false;
+
+  function getDb() {
+    if (!window.idb || !window.idb.openDB) {
+      return null;
+    }
+    if (!dbPromise) {
+      dbPromise = window.idb.openDB(DB_NAME, DB_VERSION, {
+        upgrade(db) {
+          if (!db.objectStoreNames.contains(DB_STORES.books)) {
+            db.createObjectStore(DB_STORES.books, { keyPath: "id" });
+          }
+          if (!db.objectStoreNames.contains(DB_STORES.contents)) {
+            db.createObjectStore(DB_STORES.contents, { keyPath: "bookId" });
+          }
+          if (!db.objectStoreNames.contains(DB_STORES.notes)) {
+            db.createObjectStore(DB_STORES.notes, { keyPath: "id" });
+          }
+          if (!db.objectStoreNames.contains(DB_STORES.settings)) {
+            db.createObjectStore(DB_STORES.settings, { keyPath: "key" });
+          }
+        }
+      });
+    }
+    return dbPromise;
+  }
+
+  async function initIndexedDb() {
+    const db = getDb();
+    if (!db) return false;
+    try {
+      await db;
+      idbReady = true;
+      return true;
+    } catch (err) {
+      console.warn("IndexedDB unavailable", err);
+      idbReady = false;
+      return false;
+    }
+  }
+
+  async function idbGet(storeName, key) {
+    const db = getDb();
+    if (!db) return null;
+    return (await db).get(storeName, key);
+  }
+
+  async function idbGetAll(storeName) {
+    const db = getDb();
+    if (!db) return [];
+    return (await db).getAll(storeName);
+  }
+
+  async function idbPut(storeName, value) {
+    const db = getDb();
+    if (!db) return;
+    return (await db).put(storeName, value);
+  }
+
+  async function idbDelete(storeName, key) {
+    const db = getDb();
+    if (!db) return;
+    return (await db).delete(storeName, key);
+  }
+
+  async function idbClear(storeName) {
+    const db = getDb();
+    if (!db) return;
+    return (await db).clear(storeName);
+  }
+
+  const contentCache = new Map();
+
+  /* ---------------------------
      Storage Model
      State is stored in localStorage key:
      swiftreader_v1
@@ -155,7 +254,7 @@
   const STORE_KEY = "swiftreader_v1";
 
   const defaultState = () => ({
-    version: 1,
+    version: 2,
     createdAt: nowISO(),
     updatedAt: nowISO(),
     settings: {
@@ -167,19 +266,24 @@
       tapControls: true,
       rememberLastBook: true,
       punctuationPause: 80, // 0-200 slider value
+      chunkSize: 1
     },
     library: {
       books: [], // Book[]
       lastOpenedBookId: null,
     },
-    notes: [] // Note[]
+    notes: [], // Note[]
+    storage: {
+      migratedToIdb: false,
+      migratedAt: null
+    }
   });
 
   // Book shape:
   // {
   //   id, title, author, tags:[], addedAt, updatedAt,
   //   sourceType:"paste"|"txt"|"md"|"epub"|"pdf",
-  //   text, tokens, wordCount,
+  //   text, tokens, wordCount, tokenCount, contentStored,
   //   progress: { index:number, updatedAt, bookmarks: [{id, index, createdAt}] },
   //   stats: { openedAt, lastSessionAt, totalReadWords }
   // }
@@ -202,7 +306,8 @@
       ...parsed,
       settings: { ...base.settings, ...(parsed.settings || {}) },
       library: { ...base.library, ...(parsed.library || {}) },
-      notes: Array.isArray(parsed.notes) ? parsed.notes : []
+      notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+      storage: { ...base.storage, ...(parsed.storage || {}) }
     };
 
     // Ensure books array
@@ -213,10 +318,28 @@
     return merged;
   }
 
+  function serializeStateForStorage() {
+    if (!state.storage?.migratedToIdb) return state;
+    const strippedBooks = state.library.books.map(book => ({
+      ...book,
+      text: "",
+      tokens: []
+    }));
+    return {
+      ...state,
+      library: {
+        ...state.library,
+        books: strippedBooks
+      }
+    };
+  }
+
   function saveState() {
     state.updatedAt = nowISO();
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    const toStore = serializeStateForStorage();
+    localStorage.setItem(STORE_KEY, JSON.stringify(toStore));
     updateStorageEstimate();
+    void persistSettingsToIdb();
   }
 
   function normalizeBook(b) {
@@ -231,6 +354,8 @@
       text: typeof b?.text === "string" ? b.text : "",
       tokens: Array.isArray(b?.tokens) ? b.tokens : [],
       wordCount: typeof b?.wordCount === "number" ? b.wordCount : 0,
+      tokenCount: typeof b?.tokenCount === "number" ? b.tokenCount : (Array.isArray(b?.tokens) ? b.tokens.length : 0),
+      contentStored: b?.contentStored || (b?.text ? "local" : "idb"),
       progress: {
         index: typeof b?.progress?.index === "number" ? b.progress.index : 0,
         updatedAt: b?.progress?.updatedAt || nowISO(),
@@ -243,14 +368,16 @@
       }
     };
 
-    // If tokens missing but text exists, generate tokens on load
+    // If tokens missing but text exists, generate tokens on load (legacy data)
     if ((!nb.tokens || nb.tokens.length === 0) && nb.text) {
       nb.tokens = tokenize(nb.text);
       nb.wordCount = countWords(nb.tokens);
+      nb.tokenCount = nb.tokens.length;
     }
 
     // Clamp progress
-    nb.progress.index = clamp(nb.progress.index, 0, Math.max(0, nb.tokens.length - 1));
+    const totalTokens = Math.max(0, nb.tokenCount || nb.tokens.length || 0);
+    nb.progress.index = clamp(nb.progress.index, 0, Math.max(0, totalTokens - 1));
     return nb;
   }
 
@@ -259,6 +386,7 @@
     if (idx >= 0) state.library.books[idx] = normalizeBook(book);
     else state.library.books.unshift(normalizeBook(book));
     saveState();
+    void persistBookMetadataToIdb(book.id);
   }
 
   function deleteBook(bookId) {
@@ -267,6 +395,7 @@
     state.notes = state.notes.filter(n => n.bookId !== bookId);
     if (state.library.lastOpenedBookId === bookId) state.library.lastOpenedBookId = null;
     saveState();
+    void deleteBookFromIdb(bookId);
   }
 
   function getBook(bookId) {
@@ -279,7 +408,8 @@
       id: note.id || uid("note"),
       bookId: note.bookId,
       bookTitle: note.bookTitle || "",
-      index: typeof note.index === "number" ? note.index : 0,
+      index: typeof note.index === "number" ? note.index : (note.wordIndex ?? 0),
+      wordIndex: typeof note.wordIndex === "number" ? note.wordIndex : (note.index ?? 0),
       excerpt: note.excerpt || "",
       text: (note.text || "").trim(),
       createdAt: note.createdAt || nowISO(),
@@ -288,7 +418,113 @@
     if (idx >= 0) state.notes[idx] = normalized;
     else state.notes.unshift(normalized);
     saveState();
+    void idbPut(DB_STORES.notes, normalized);
     return normalized;
+  }
+
+  /* ---------------------------
+     IndexedDB sync helpers
+  --------------------------- */
+  async function persistBookMetadataToIdb(bookId) {
+    if (!idbReady) return;
+    const book = getBook(bookId);
+    if (!book) return;
+    const normalized = normalizeBook(book);
+    const payload = {
+      ...normalized,
+      text: "",
+      tokens: []
+    };
+    await idbPut(DB_STORES.books, payload);
+  }
+
+  async function persistBookContentToIdb(bookId, rawText, tokens) {
+    if (!idbReady) return;
+    const payload = {
+      bookId,
+      rawText: rawText || "",
+      tokens: Array.isArray(tokens) ? tokens : [],
+      tokenCount: Array.isArray(tokens) ? tokens.length : 0,
+      updatedAt: nowISO()
+    };
+    await idbPut(DB_STORES.contents, payload);
+    contentCache.set(bookId, payload);
+  }
+
+  async function deleteBookFromIdb(bookId) {
+    if (!idbReady) return;
+    await idbDelete(DB_STORES.books, bookId);
+    await idbDelete(DB_STORES.contents, bookId);
+    contentCache.delete(bookId);
+    const notes = await idbGetAll(DB_STORES.notes);
+    const toDelete = notes.filter(n => n.bookId === bookId);
+    await Promise.all(toDelete.map(n => idbDelete(DB_STORES.notes, n.id)));
+  }
+
+  async function persistSettingsToIdb() {
+    if (!idbReady) return;
+    await idbPut(DB_STORES.settings, { key: "settings", value: state.settings });
+  }
+
+  async function hydrateNotesFromIdb() {
+    if (!idbReady) return;
+    const notes = await idbGetAll(DB_STORES.notes);
+    if (notes.length) {
+      state.notes = notes;
+      saveState();
+    }
+  }
+
+  async function hydrateBooksFromIdb() {
+    if (!idbReady) return;
+    const books = await idbGetAll(DB_STORES.books);
+    if (books.length) {
+      state.library.books = books.map(b => normalizeBook(b));
+      saveState();
+    }
+  }
+
+  async function migrateLocalStorageToIdb() {
+    if (!idbReady) return;
+    if (state.storage?.migratedToIdb) return;
+
+    const booksToMigrate = state.library.books.filter(b => (b.text && b.text.length) || (b.tokens && b.tokens.length));
+    const notesToMigrate = Array.isArray(state.notes) ? state.notes : [];
+
+    try {
+      for (const book of state.library.books) {
+        await idbPut(DB_STORES.books, {
+          ...book,
+          text: "",
+          tokens: []
+        });
+      }
+      for (const book of booksToMigrate) {
+        const text = book.text || "";
+        const tokens = Array.isArray(book.tokens) && book.tokens.length ? book.tokens : tokenize(text);
+        await persistBookContentToIdb(book.id, text, tokens);
+      }
+      for (const note of notesToMigrate) {
+        await idbPut(DB_STORES.notes, note);
+      }
+      await persistSettingsToIdb();
+      state.storage.migratedToIdb = true;
+      state.storage.migratedAt = nowISO();
+      saveState();
+    } catch (err) {
+      console.warn("Migration to IndexedDB failed", err);
+    }
+  }
+
+  async function resetIndexedDb() {
+    if (!idbReady) return;
+    await Promise.all([
+      idbClear(DB_STORES.books),
+      idbClear(DB_STORES.contents),
+      idbClear(DB_STORES.notes),
+      idbClear(DB_STORES.settings)
+    ]);
+    contentCache.clear();
   }
 
   /* ---------------------------
@@ -317,6 +553,7 @@
   const importTags = $("#import-tags");
   const importConfirmBtn = $("#import-confirm-btn");
   const importClearBtn = $("#import-clear-btn");
+  const importStatus = $("#import-status");
 
   const pasteText = $("#paste-text");
   const pasteTitle = $("#paste-title");
@@ -383,6 +620,7 @@
   const defaultWpmInput = $("#default-wpm");
   const fontSizeSlider = $("#font-size");
   const fontFamilySelect = $("#font-family");
+  const chunkSizeSelect = $("#chunk-size");
   const autoPauseCheckbox = $("#auto-pause");
   const tapControlsCheckbox = $("#tap-controls");
   const rememberLastBookCheckbox = $("#remember-last-book");
@@ -410,7 +648,9 @@
     elapsedBefore: 0,         // ms accumulated before last play
     sessionWords: 0,          // word tokens shown during session
     pauses: 0,                // number of manual pauses
-    lastTickAt: null
+    lastTickAt: null,
+    nextTickAt: null,
+    chunkDisplay: null
   };
 
   // Selected note in Notes view
@@ -427,12 +667,21 @@
   /* ---------------------------
      Init
   --------------------------- */
-  applyThemeFromSettings();
-  applyReaderStyleSettings();
-  hydrateSettingsUI();
-  wireEvents();
-  renderAll();
-  restoreLastBookIfNeeded();
+  void initApp();
+
+  async function initApp() {
+    await initIndexedDb();
+    await migrateLocalStorageToIdb();
+    await hydrateBooksFromIdb();
+    await hydrateNotesFromIdb();
+    applyThemeFromSettings();
+    applyReaderStyleSettings();
+    hydrateSettingsUI();
+    wireEvents();
+    renderAll();
+    restoreLastBookIfNeeded();
+    registerServiceWorker();
+  }
 
   /* ---------------------------
      Event Wiring
@@ -532,6 +781,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       importTitle.value = "SwiftReader Demo";
       importAuthor.value = "";
       importTags.value = "demo, rsvp";
+      setImportStatus("Demo text loaded.");
     });
 
     importConfirmBtn.addEventListener("click", async () => {
@@ -544,11 +794,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
       if (!importBuffer.text) {
         // No file selected? Let user still add from file panel if they filled nothing.
-        alert("Please choose a TXT/MD file (or load demo text) first.");
+        alert("Please choose a file (TXT/MD/EPUB/PDF) or load demo text first.");
         return;
       }
 
-      const book = createBookFromText({
+      const book = await createBookFromText({
         title,
         author,
         tags,
@@ -560,21 +810,21 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       clearFileImportUI();
 
       // Auto-open in reader
-      openBookInReader(book.id);
+      await openBookInReader(book.id);
       setView("reader");
     });
 
     importClearBtn.addEventListener("click", () => clearFileImportUI());
 
     // Paste import
-    pasteAddBtn.addEventListener("click", () => {
+    pasteAddBtn.addEventListener("click", async () => {
       const text = normalizeText(pasteText.value || "");
       const title = (pasteTitle.value || "Pasted Text").trim() || "Pasted Text";
       if (!text) {
         alert("Paste some text first.");
         return;
       }
-      const book = createBookFromText({
+      const book = await createBookFromText({
         title,
         author: "",
         tags: ["paste"],
@@ -584,7 +834,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       upsertBook(book);
       pasteText.value = "";
       pasteTitle.value = "";
-      openBookInReader(book.id);
+      await openBookInReader(book.id);
       setView("reader");
     });
 
@@ -601,6 +851,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       if (!confirm("This will delete all local books and notes for SwiftReader. Continue?")) return;
       state = defaultState();
       saveState();
+      void resetIndexedDb();
       stopReader(true);
       selectedBookId = null;
       selectedNoteId = null;
@@ -612,7 +863,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     });
 
     // Sidebar export/import
-    exportBtn.addEventListener("click", () => exportData());
+    exportBtn.addEventListener("click", () => void exportData());
     importDataBtn.addEventListener("click", () => importData());
 
     // Reader controls
@@ -647,12 +898,13 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       if (!text) return;
       const book = getBook(selectedBookId);
       const idx = getCurrentTokenIndex();
-      const excerpt = makeExcerpt(book, idx);
+      const excerpt = makeExcerpt(book, idx, 12);
       upsertNote({
         id: null,
         bookId: book.id,
         bookTitle: book.title,
         index: idx,
+        wordIndex: idx,
         excerpt,
         text
       });
@@ -731,6 +983,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       if (!confirm("Delete this note?")) return;
       state.notes = state.notes.filter(n => n.id !== selectedNoteId);
       saveState();
+      void idbDelete(DB_STORES.notes, selectedNoteId);
       selectedNoteId = null;
       clearNotePreview();
       renderNotesView();
@@ -759,6 +1012,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       saveState();
     });
 
+    chunkSizeSelect.addEventListener("change", () => {
+      const v = clamp(Number(chunkSizeSelect.value), 1, 4);
+      state.settings.chunkSize = v;
+      saveState();
+    });
+
     autoPauseCheckbox.addEventListener("change", () => {
       state.settings.autoPause = !!autoPauseCheckbox.checked;
       saveState();
@@ -775,7 +1034,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     });
 
     // Export/import from settings too
-    settingsExportBtn.addEventListener("click", () => exportData());
+    settingsExportBtn.addEventListener("click", () => void exportData());
     settingsImportBtn.addEventListener("click", () => importData());
 
     settingsResetBtn.addEventListener("click", () => dangerResetBtn.click());
@@ -839,6 +1098,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   /* ---------------------------
+     Service worker
+  --------------------------- */
+  function registerServiceWorker() {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("./service-worker.js").catch((err) => {
+      console.warn("Service worker registration failed", err);
+    });
+  }
+
+  /* ---------------------------
      Modal
   --------------------------- */
   function openModal(el) {
@@ -895,6 +1164,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     fontSizeSlider.value = String(state.settings.fontSize || 46);
     fontFamilySelect.value = state.settings.fontFamily || "system";
+    chunkSizeSelect.value = String(state.settings.chunkSize || 1);
 
     autoPauseCheckbox.checked = !!state.settings.autoPause;
     tapControlsCheckbox.checked = !!state.settings.tapControls;
@@ -928,43 +1198,141 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   /* ---------------------------
      Import handling
   --------------------------- */
-  async function handleFilesSelected(files) {
-    // For MVP: accept first text-like file. Multiple support can be added later.
-    // Accept .txt, .md. For .epub/.pdf we show a friendly message.
-    const supported = files.filter(f => {
-      const name = (f.name || "").toLowerCase();
-      return name.endsWith(".txt") || name.endsWith(".md");
-    });
+  function setImportStatus(message) {
+    if (!importStatus) return;
+    importStatus.textContent = message || "";
+  }
 
-    const epubPdf = files.filter(f => {
-      const name = (f.name || "").toLowerCase();
-      return name.endsWith(".epub") || name.endsWith(".pdf");
-    });
+  async function extractTextFromPdf(file, onStatus) {
+    const pdfjsLib = window["pdfjs-dist/build/pdf"];
+    if (!pdfjsLib) {
+      throw new Error("PDF.js not available");
+    }
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const buffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({ data: buffer });
+    const pdf = await loadingTask.promise;
+    const totalPages = pdf.numPages || 0;
+    const textParts = [];
 
-    if (epubPdf.length > 0 && supported.length === 0) {
-      alert("EPUB/PDF import is coming next. For V1 reliability, please use TXT or Paste.");
-      return;
+    for (let i = 1; i <= totalPages; i += 1) {
+      onStatus?.(`Extracting PDF… page ${i} / ${totalPages}`);
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map(item => item.str || "").join(" ");
+      textParts.push(pageText);
+      await sleep(0);
     }
 
-    if (supported.length === 0) {
-      alert("Please select a .txt or .md file for this prototype (or use Paste).");
-      return;
+    const combined = textParts.join("\n\n");
+    if (totalPages > 1 && combined.trim().length < 300) {
+      onStatus?.("Scanned PDF detected.");
+    }
+    return { text: combined, totalPages };
+  }
+
+  async function extractTextFromEpub(file, onStatus) {
+    const epubLib = window.ePub;
+    if (!epubLib) {
+      throw new Error("epub.js not available");
+    }
+    const buffer = await file.arrayBuffer();
+    const book = epubLib(buffer);
+    await book.ready;
+    const metadata = await book.loaded.metadata;
+    await book.loaded.spine;
+    const sections = book.spine?.items || [];
+    const chunks = [];
+
+    for (let i = 0; i < sections.length; i += 1) {
+      const section = sections[i];
+      onStatus?.(`Extracting EPUB… ${i + 1} / ${sections.length}`);
+      const contents = await section.load(book.load.bind(book));
+      const doc = contents?.document || contents;
+      const bodyText = doc?.body ? doc.body.textContent : "";
+      if (bodyText) chunks.push(bodyText.trim());
+      section.unload();
+      await sleep(0);
     }
 
-    const f = supported[0];
-    const name = f.name || "Untitled";
-    const baseTitle = name.replace(/\.(txt|md)$/i, "");
-    const text = await fileToText(f);
-
-    importBuffer = {
-      files: [f],
-      text: normalizeText(text),
-      sourceType: name.toLowerCase().endsWith(".md") ? "md" : "txt",
-      suggestedTitle: baseTitle
+    return {
+      title: metadata?.title || "",
+      text: chunks.join("\n\n")
     };
+  }
+  async function handleFilesSelected(files) {
+    if (!files || files.length === 0) return;
+    const f = files[0];
+    const name = f.name || "Untitled";
+    const lower = name.toLowerCase();
+    setImportStatus("Reading file…");
 
-    // Pre-fill title if blank
-    if (!importTitle.value.trim()) importTitle.value = baseTitle;
+    try {
+      if (lower.endsWith(".txt") || lower.endsWith(".md")) {
+        const baseTitle = name.replace(/\.(txt|md)$/i, "");
+        const text = await fileToTextAsync(f);
+        importBuffer = {
+          files: [f],
+          text: normalizeText(text),
+          sourceType: lower.endsWith(".md") ? "md" : "txt",
+          suggestedTitle: baseTitle
+        };
+        if (!importTitle.value.trim()) importTitle.value = baseTitle;
+        setImportStatus(`Loaded ${name}`);
+        return;
+      }
+
+      if (lower.endsWith(".pdf")) {
+        const baseTitle = name.replace(/\.pdf$/i, "");
+        const result = await extractTextFromPdf(f, status => setImportStatus(status));
+        const text = result?.text || "";
+        const totalPages = result?.totalPages || 1;
+        if (totalPages > 1 && text.trim().length < 300) {
+          setImportStatus("Scanned PDF detected.");
+          alert("This PDF appears to be scanned or image-based. OCR is not supported yet.");
+          return;
+        }
+        if (!text || text.length < 40) {
+          setImportStatus("No text found in PDF.");
+          alert("This PDF may be scanned or image-based. OCR is not supported yet.");
+          return;
+        }
+        importBuffer = {
+          files: [f],
+          text: normalizeText(text),
+          sourceType: "pdf",
+          suggestedTitle: baseTitle
+        };
+        if (!importTitle.value.trim()) importTitle.value = baseTitle;
+        setImportStatus(`Loaded ${name}`);
+        return;
+      }
+
+      if (lower.endsWith(".epub")) {
+        const baseTitle = name.replace(/\.epub$/i, "");
+        const { text, title } = await extractTextFromEpub(f, status => setImportStatus(status));
+        if (!text || text.length < 40) {
+          setImportStatus("No readable text found in EPUB.");
+          alert("This EPUB appears to be empty or protected.");
+          return;
+        }
+        importBuffer = {
+          files: [f],
+          text: normalizeText(text),
+          sourceType: "epub",
+          suggestedTitle: title || baseTitle
+        };
+        if (!importTitle.value.trim()) importTitle.value = title || baseTitle;
+        setImportStatus(`Loaded ${name}`);
+        return;
+      }
+
+      alert("Unsupported file type. Please choose TXT, MD, EPUB, or PDF.");
+    } catch (err) {
+      console.error(err);
+      setImportStatus("Import failed.");
+      alert("Import failed. Please try another file.");
+    }
   }
 
   function clearFileImportUI() {
@@ -972,10 +1340,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     importAuthor.value = "";
     importTags.value = "";
     importBuffer = { files: [], text: "", sourceType: null, suggestedTitle: "" };
+    setImportStatus("");
   }
 
-  function createBookFromText({ title, author, tags, text, sourceType }) {
-    const tokens = tokenize(text);
+  async function createBookFromText({ title, author, tags, text, sourceType }) {
+    const normalizedText = normalizeText(text);
+    const tokens = tokenize(normalizedText);
     const wc = countWords(tokens);
     const book = {
       id: uid("book"),
@@ -985,13 +1355,58 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       addedAt: nowISO(),
       updatedAt: nowISO(),
       sourceType: sourceType || "paste",
-      text,
-      tokens,
+      text: "",
+      tokens: [],
       wordCount: wc,
+      tokenCount: tokens.length,
+      contentStored: "idb",
       progress: { index: 0, updatedAt: nowISO(), bookmarks: [] },
       stats: { openedAt: null, lastSessionAt: null, totalReadWords: 0 }
     };
+    await persistBookContentToIdb(book.id, normalizedText, tokens);
     return book;
+  }
+
+  async function ensureBookContent(bookId) {
+    if (!bookId) return null;
+    if (contentCache.has(bookId)) return contentCache.get(bookId);
+
+    const book = getBook(bookId);
+    if (!book) return null;
+
+    // Try IndexedDB first
+    if (idbReady) {
+      const content = await idbGet(DB_STORES.contents, bookId);
+      if (content && (content.rawText || content.tokens?.length)) {
+        contentCache.set(bookId, content);
+        if (!book.tokenCount && content.tokenCount) {
+          upsertBook({ ...book, tokenCount: content.tokenCount });
+        }
+        return content;
+      }
+    }
+
+    // Fallback to localStorage legacy content
+    if (book.text || (book.tokens && book.tokens.length)) {
+      const text = book.text || "";
+      const tokens = book.tokens && book.tokens.length ? book.tokens : tokenize(text);
+      const content = {
+        bookId,
+        rawText: text,
+        tokens,
+        tokenCount: tokens.length,
+        updatedAt: nowISO()
+      };
+      contentCache.set(bookId, content);
+      await persistBookContentToIdb(bookId, text, tokens);
+      if (!book.tokenCount || !book.wordCount) {
+        const wordCount = countWords(tokens);
+        upsertBook({ ...book, wordCount, tokenCount: tokens.length });
+      }
+      return content;
+    }
+
+    return null;
   }
 
   /* ---------------------------
@@ -1041,8 +1456,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const btn = document.createElement("button");
       btn.className = "book-card";
       btn.type = "button";
-      btn.addEventListener("click", () => {
-        openBookInReader(b.id);
+      btn.addEventListener("click", async () => {
+        await openBookInReader(b.id);
         setView("reader");
       });
 
@@ -1116,9 +1531,25 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function computeProgressPct(book) {
-    const total = Math.max(1, (book.tokens || []).length);
+    const total = Math.max(1, (book.tokenCount || (book.tokens || []).length));
     const idx = clamp(book.progress?.index ?? 0, 0, total - 1);
     return Math.round((idx / (total - 1)) * 100);
+  }
+
+  function getCachedTokens(bookId) {
+    const cached = contentCache.get(bookId);
+    if (cached && Array.isArray(cached.tokens)) return cached.tokens;
+    const book = getBook(bookId);
+    if (book && Array.isArray(book.tokens)) return book.tokens;
+    return [];
+  }
+
+  function getTokenCountForBook(book) {
+    if (!book) return 0;
+    const cached = contentCache.get(book.id);
+    if (cached && typeof cached.tokenCount === "number") return cached.tokenCount;
+    if (typeof book.tokenCount === "number") return book.tokenCount;
+    return Array.isArray(book.tokens) ? book.tokens.length : 0;
   }
 
   /* ---------------------------
@@ -1132,10 +1563,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (!b) return;
     // Don't auto-switch view; just preload the book selection for quick start
     selectedBookId = b.id;
-    renderReader();
+    void ensureBookContent(b.id).then(() => renderReader());
   }
 
-  function openBookInReader(bookId) {
+  async function openBookInReader(bookId) {
     const book = getBook(bookId);
     if (!book) return;
 
@@ -1162,6 +1593,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pauseSlider.value = String(state.settings.punctuationPause ?? 80);
     wpmValue.textContent = String(state.settings.defaultWpm || 300);
 
+    // Ensure content ready
+    renderReaderLoading();
+    await ensureBookContent(book.id);
+
     // Render
     renderReader();
     renderReaderNotes();
@@ -1187,11 +1622,36 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     readerBookTitle.textContent = book.title || "Untitled";
     readerBookSub.textContent = `${book.author || "—"} • ${book.wordCount || 0} words`;
 
+    const tokens = getCachedTokens(book.id);
+    if (!tokens.length) {
+      const cached = contentCache.get(book.id);
+      if (cached && (!cached.tokens || cached.tokens.length === 0)) {
+        readerBookSub.textContent = "No readable text found.";
+        setRSVPDisplay("No", "•", "Text");
+        rsvpSubline.textContent = "Try another file or source";
+        rsvpSubline.hidden = false;
+        btnPlay.disabled = true;
+        return;
+      }
+      renderReaderLoading();
+      void ensureBookContent(book.id).then(() => renderReader());
+      return;
+    }
+
     // Render current token
-    const idx = clamp(book.progress?.index ?? 0, 0, Math.max(0, book.tokens.length - 1));
+    const idx = clamp(book.progress?.index ?? 0, 0, Math.max(0, tokens.length - 1));
     renderTokenAtIndex(book, idx);
 
     readerProgressEl.textContent = `${computeProgressPct(book)}%`;
+  }
+
+  function renderReaderLoading() {
+    readerBookTitle.textContent = "Loading…";
+    readerBookSub.textContent = "Preparing book text";
+    setRSVPDisplay("Loading", "•", "Book");
+    rsvpSubline.textContent = "Please wait";
+    rsvpSubline.hidden = false;
+    btnPlay.disabled = true;
   }
 
   function setRSVPDisplay(left, pivot, right) {
@@ -1201,12 +1661,23 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function renderTokenAtIndex(book, idx) {
-    const tok = book.tokens[idx];
+    const tokens = getCachedTokens(book.id);
+    const tok = tokens[idx];
     if (!tok) {
       setRSVPDisplay("End", "•", "Done");
       rsvpSubline.textContent = "End of book";
       rsvpSubline.hidden = false;
       stopReader(true);
+      return;
+    }
+
+    if (reader.chunkDisplay && reader.chunkDisplay.endIndex === idx) {
+      const words = reader.chunkDisplay.words || [];
+      const [first, ...rest] = words;
+      const { left, pivot, right } = renderRSVPWord(first || "");
+      const restText = rest.length ? ` ${rest.join(" ")}` : "";
+      setRSVPDisplay(left, pivot, `${right}${restText}`);
+      rsvpSubline.hidden = true;
       return;
     }
 
@@ -1234,14 +1705,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   function getCurrentTokenIndex() {
     const book = selectedBookId ? getBook(selectedBookId) : null;
     if (!book) return 0;
-    return clamp(book.progress?.index ?? 0, 0, Math.max(0, book.tokens.length - 1));
+    const total = Math.max(0, getTokenCountForBook(book));
+    return clamp(book.progress?.index ?? 0, 0, Math.max(0, total - 1));
   }
 
   function setTokenIndex(idx, { fromPlayback = false } = {}) {
     const book = selectedBookId ? getBook(selectedBookId) : null;
     if (!book) return;
+    if (!fromPlayback) reader.chunkDisplay = null;
 
-    const clamped = clamp(idx, 0, Math.max(0, book.tokens.length - 1));
+    const total = Math.max(0, getTokenCountForBook(book));
+    const clamped = clamp(idx, 0, Math.max(0, total - 1));
     const updated = {
       ...book,
       progress: {
@@ -1257,7 +1731,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     // Track read words for session / total
     if (fromPlayback) {
-      const tok = book.tokens[clamped];
+      const tok = getCachedTokens(book.id)[clamped];
       if (tok && tok.kind === "word") {
         updated.stats.totalReadWords = (updated.stats.totalReadWords || 0) + 1;
       }
@@ -1283,8 +1757,15 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   function startReader() {
     const book = getBook(selectedBookId);
     if (!book) return;
+    const tokens = getCachedTokens(book.id);
+    if (!tokens.length) {
+      renderReaderLoading();
+      void ensureBookContent(book.id).then(() => startReader());
+      return;
+    }
 
     reader.isPlaying = true;
+    reader.chunkDisplay = null;
     btnPlay.setAttribute("aria-pressed", "true");
     btnPlay.textContent = "⏸ Pause";
     rsvpSubline.hidden = true;
@@ -1304,6 +1785,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
 
     // Kick tick loop
+    reader.nextTickAt = performance.now();
     scheduleNextTick(0);
     scheduleSessionUI();
   }
@@ -1326,6 +1808,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
 
     reader.isPlaying = false;
+    reader.nextTickAt = null;
+    reader.chunkDisplay = null;
     btnPlay.setAttribute("aria-pressed", "false");
     btnPlay.textContent = "▶ Play";
 
@@ -1360,15 +1844,32 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     requestAnimationFrame(tick);
   }
 
+  function getBaseDelayMs() {
+    const baseWpm = clamp(Number(wpmSlider.value || state.settings.defaultWpm || 300), 150, 1200);
+    return 60000 / baseWpm;
+  }
+
+  function getPauseDelayForToken(tok) {
+    if (!state.settings.autoPause || !tok) return 0;
+    const pauseSliderValue = clamp(Number(pauseSlider.value ?? state.settings.punctuationPause ?? 80), 0, 200);
+    const pauseScale = pauseSliderValue / 100;
+    const baseDelay = getBaseDelayMs();
+
+    if (tok.kind === "para") return baseDelay * 1.8 * pauseScale;
+    if (tok.kind !== "punct") return 0;
+    if (HARD_PUNCT_RE.test(tok.t)) return baseDelay * 1.2 * pauseScale;
+    if (SOFT_PUNCT_RE.test(tok.t)) return baseDelay * 0.6 * pauseScale;
+    return 0;
+  }
+
   function scheduleNextTick(extraDelayMs) {
     if (!reader.isPlaying) return;
-    const baseWpm = clamp(Number(wpmSlider.value || state.settings.defaultWpm || 300), 150, 1200);
-    const baseInterval = 60000 / baseWpm;
+    const baseInterval = getBaseDelayMs();
     const delay = Math.max(0, baseInterval + (extraDelayMs || 0));
-
-    reader.timer = setTimeout(() => {
-      advancePlayback();
-    }, delay);
+    const now = performance.now();
+    reader.nextTickAt = reader.nextTickAt ? reader.nextTickAt + delay : now + delay;
+    const timeout = Math.max(0, reader.nextTickAt - now);
+    reader.timer = setTimeout(advancePlayback, timeout);
   }
 
   function advancePlayback() {
@@ -1377,19 +1878,32 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const book = getBook(selectedBookId);
     if (!book) return stopReader(true);
 
+    const tokens = getCachedTokens(book.id);
     let idx = getCurrentTokenIndex();
-    if (idx >= book.tokens.length) {
+    if (idx >= tokens.length) {
       stopReader(true);
       return;
     }
 
     // Move to next meaningful token (including punctuation/para, but with pauses)
-    idx = clamp(idx + 1, 0, Math.max(0, book.tokens.length - 1));
-    const tok = book.tokens[idx];
+    idx = clamp(idx + 1, 0, Math.max(0, tokens.length - 1));
+    let tok = tokens[idx];
+    const chunkSize = clamp(Number(state.settings.chunkSize || 1), 1, 4);
+    reader.chunkDisplay = null;
+
+    if (tok && tok.kind === "word" && chunkSize > 1) {
+      const chunkInfo = getChunkInfo(tokens, idx, chunkSize);
+      if (chunkInfo) {
+        reader.chunkDisplay = chunkInfo;
+        idx = chunkInfo.endIndex;
+        tok = tokens[idx];
+      }
+    }
 
     // If we just advanced into a word, count it for session
     if (tok && tok.kind === "word") {
-      reader.sessionWords += 1;
+      const chunkWords = reader.chunkDisplay?.wordCount || 1;
+      reader.sessionWords += chunkWords;
       statWords.textContent = String(reader.sessionWords);
     }
 
@@ -1397,28 +1911,38 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     setTokenIndex(idx, { fromPlayback: tok?.kind === "word" });
 
     // Compute pause
-    let extra = 0;
-    const pauseIntensity = clamp(Number(pauseSlider.value ?? state.settings.punctuationPause ?? 80), 0, 200);
-
-    if (state.settings.autoPause) {
-      if (tok?.kind === "punct") {
-        // soft vs hard punctuation
-        if (HARD_PUNCT_RE.test(tok.t)) extra += 120 + pauseIntensity * 2;
-        else if (SOFT_PUNCT_RE.test(tok.t)) extra += 40 + pauseIntensity;
-      } else if (tok?.kind === "para") {
-        extra += 200 + pauseIntensity * 3;
-      }
-    }
+    const extra = getPauseDelayForToken(tok);
 
     // If at end, stop soon
-    if (idx >= book.tokens.length - 1) {
+    if (idx >= tokens.length - 1) {
       // show last token then stop
-      scheduleNextTick(extra + 120);
+      scheduleNextTick(extra + getBaseDelayMs());
       setTimeout(() => stopReader(true), extra + 250);
       return;
     }
 
     scheduleNextTick(extra);
+  }
+
+  function getChunkInfo(tokens, startIndex, chunkSize) {
+    if (!tokens || !tokens.length) return null;
+    const words = [];
+    let endIndex = startIndex;
+    for (let i = startIndex; i < tokens.length; i += 1) {
+      const tok = tokens[i];
+      if (!tok) break;
+      if (tok.kind !== "word") break;
+      words.push(tok.t);
+      endIndex = i;
+      if (words.length >= chunkSize) break;
+    }
+    if (!words.length) return null;
+    return {
+      startIndex,
+      endIndex,
+      words,
+      wordCount: words.length
+    };
   }
 
   function stepWords(delta) {
@@ -1429,7 +1953,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (reader.isPlaying) stopReader(false);
 
     const idx = getCurrentTokenIndex();
-    const next = clamp(idx + delta, 0, Math.max(0, book.tokens.length - 1));
+    const tokens = getCachedTokens(book.id);
+    if (!tokens.length) return;
+    const next = clamp(idx + delta, 0, Math.max(0, tokens.length - 1));
     setTokenIndex(next, { fromPlayback: false });
     renderReader();
     renderReaderNotes();
@@ -1442,7 +1968,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (reader.isPlaying) stopReader(false);
 
     const idx = getCurrentTokenIndex();
-    const tokens = book.tokens;
+    const tokens = getCachedTokens(book.id);
 
     function isSentenceEnd(i) {
       const t = tokens[i];
@@ -1504,7 +2030,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (!selectedBookId) return;
     const book = getBook(selectedBookId);
     const idx = getCurrentTokenIndex();
-    const excerpt = makeExcerpt(book, idx);
+    const excerpt = makeExcerpt(book, idx, 12);
 
     if (!quickNote.value.trim()) {
       quickNote.value = `(${excerpt})\n`;
@@ -1512,15 +2038,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     quickNote.focus();
   }
 
-  function makeExcerpt(book, idx) {
-    if (!book || !book.tokens || book.tokens.length === 0) return "";
+  function makeExcerpt(book, idx, radius = 12) {
+    if (!book) return "";
     // Build a short excerpt around idx using only word tokens
-    const tokens = book.tokens;
+    const tokens = getCachedTokens(book.id);
+    if (!tokens.length) return "";
     const words = [];
     let i = idx;
     // Step back a bit
     let back = 0;
-    while (i > 0 && back < 8) {
+    while (i > 0 && back < radius) {
       i--;
       if (tokens[i]?.kind === "word") {
         words.unshift(tokens[i].t);
@@ -1530,7 +2057,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     // include current and forward
     let f = idx;
     let forward = 0;
-    while (f < tokens.length && forward < 10) {
+    while (f < tokens.length && forward < radius) {
       if (tokens[f]?.kind === "word") {
         words.push(tokens[f].t);
         forward++;
@@ -1601,7 +2128,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     let notes = [...state.notes];
     if (bookFilter !== "all") notes = notes.filter(n => n.bookId === bookFilter);
     if (q) {
-      notes = notes.filter(n => (n.text || "").toLowerCase().includes(q) || (n.bookTitle || "").toLowerCase().includes(q));
+      notes = notes.filter(n => {
+        const hay = `${n.text || ""} ${n.bookTitle || ""} ${n.excerpt || ""}`.toLowerCase();
+        return hay.includes(q);
+      });
     }
 
     if (sort === "recent") {
@@ -1626,14 +2156,15 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
       const s = document.createElement("div");
       s.className = "note-item-sub";
-      s.textContent = `${n.bookTitle || "—"} • ${new Date(n.updatedAt || n.createdAt).toLocaleString()}`;
+      const excerpt = n.excerpt ? ` • “… ${n.excerpt.slice(0, 80)} …”` : "";
+      s.textContent = `${n.bookTitle || "—"} • ${new Date(n.updatedAt || n.createdAt).toLocaleString()}${excerpt}`;
 
       li.appendChild(t);
       li.appendChild(s);
 
-      li.addEventListener("click", () => selectNote(n.id));
+      li.addEventListener("click", () => void selectNote(n.id));
       li.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") selectNote(n.id);
+        if (e.key === "Enter") void selectNote(n.id);
       });
 
       notesAllList.appendChild(li);
@@ -1645,16 +2176,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       clearNotePreview();
     } else if (selectedNoteId) {
       // Keep preview updated
-      selectNote(selectedNoteId, true);
+      void selectNote(selectedNoteId, true);
     }
   }
 
-  function selectNote(noteId, silent = false) {
+  async function selectNote(noteId, silent = false) {
     const note = state.notes.find(n => n.id === noteId);
     if (!note) return;
     selectedNoteId = noteId;
 
-    notePreviewBook.textContent = `${note.bookTitle || "—"} • at index ${note.index}`;
+    const noteIndex = typeof note.wordIndex === "number" ? note.wordIndex : note.index;
+    notePreviewBook.textContent = `${note.bookTitle || "—"} • at index ${noteIndex}`;
     notePreviewText.textContent = note.text;
     noteEdit.value = note.text;
 
@@ -1662,10 +2194,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       // Also open the related book and jump to note location
       const book = getBook(note.bookId);
       if (book) {
-        openBookInReader(book.id);
+        await openBookInReader(book.id);
         setView("reader");
         stepWords(0); // re-render
-        setTokenIndex(note.index, { fromPlayback: false });
+        setTokenIndex(noteIndex, { fromPlayback: false });
         renderReaderNotes();
       }
     }
@@ -1680,12 +2212,32 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   /* ---------------------------
      Export / Import
   --------------------------- */
-  function exportData() {
+  async function exportData() {
+    const books = state.library.books.map(b => normalizeBook(b));
+    const notes = idbReady ? await idbGetAll(DB_STORES.notes) : state.notes;
+    let contents = [];
+    if (idbReady) {
+      contents = await idbGetAll(DB_STORES.contents);
+    } else {
+      contents = books
+        .filter(b => b.text || (b.tokens && b.tokens.length))
+        .map(b => ({
+          bookId: b.id,
+          rawText: b.text || "",
+          tokens: b.tokens || [],
+          tokenCount: (b.tokens || []).length,
+          updatedAt: b.updatedAt || nowISO()
+        }));
+    }
+
     const payload = {
       exportedAt: nowISO(),
       app: "SwiftReader",
-      version: state.version,
-      state
+      version: 2,
+      settings: state.settings,
+      books,
+      contents,
+      notes
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -1706,32 +2258,81 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     input.addEventListener("change", async () => {
       const file = input.files?.[0];
       if (!file) return;
-      const text = await fileToText(file);
+      const text = await fileToTextAsync(file);
       const parsed = safeJsonParse(text, null);
       if (!parsed || typeof parsed !== "object") {
         alert("Invalid JSON file.");
         return;
       }
-      const importedState = parsed.state || parsed; // allow raw state
-      if (!importedState || typeof importedState !== "object") {
-        alert("Import file does not contain a valid state.");
+      const imported = parsed.state ? parsed.state : parsed;
+      const incomingBooks = Array.isArray(imported.books || imported.library?.books) ? (imported.books || imported.library.books) : [];
+      const incomingNotes = Array.isArray(imported.notes) ? imported.notes : [];
+      const incomingContents = Array.isArray(imported.contents) ? imported.contents : [];
+      const incomingSettings = imported.settings || imported.state?.settings;
+
+      if (!incomingBooks.length && !incomingNotes.length && !incomingContents.length) {
+        alert("Import file does not contain library data.");
         return;
       }
 
-      // Merge carefully
-      const base = defaultState();
-      state = {
-        ...base,
-        ...importedState,
-        settings: { ...base.settings, ...(importedState.settings || {}) },
-        library: { ...base.library, ...(importedState.library || {}) },
-        notes: Array.isArray(importedState.notes) ? importedState.notes : []
-      };
-      if (!Array.isArray(state.library.books)) state.library.books = [];
-      state.library.books = state.library.books.map(b => normalizeBook(b));
+      const replace = confirm("Replace current library with imported data?\n\nOK = Replace\nCancel = Merge");
+
+      if (replace) {
+        state = defaultState();
+        await resetIndexedDb();
+      }
+
+      if (incomingSettings) {
+        state.settings = { ...state.settings, ...incomingSettings };
+      }
+
+      if (incomingBooks.length) {
+        const normalized = incomingBooks.map(b => normalizeBook(b));
+        if (replace) {
+          state.library.books = normalized;
+        } else {
+          const existing = new Map(state.library.books.map(b => [b.id, b]));
+          normalized.forEach(b => existing.set(b.id, b));
+          state.library.books = Array.from(existing.values());
+        }
+      }
+
+      if (incomingNotes.length) {
+        if (replace) {
+          state.notes = incomingNotes;
+        } else {
+          const existing = new Map(state.notes.map(n => [n.id, n]));
+          incomingNotes.forEach(n => existing.set(n.id, n));
+          state.notes = Array.from(existing.values());
+        }
+      }
+
+      for (const book of state.library.books) {
+        await persistBookMetadataToIdb(book.id);
+      }
+
+      if (incomingContents.length) {
+        for (const content of incomingContents) {
+          const entry = {
+            bookId: content.bookId,
+            rawText: content.rawText || "",
+            tokens: Array.isArray(content.tokens) ? content.tokens : [],
+            tokenCount: typeof content.tokenCount === "number" ? content.tokenCount : (content.tokens || []).length,
+            updatedAt: content.updatedAt || nowISO()
+          };
+          await idbPut(DB_STORES.contents, entry);
+          contentCache.set(content.bookId, entry);
+        }
+      }
+
+      for (const note of state.notes) {
+        await idbPut(DB_STORES.notes, note);
+      }
+
+      state.storage.migratedToIdb = true;
+      state.storage.migratedAt = nowISO();
       saveState();
 
-      // Refresh UI
       stopReader(true);
       selectedBookId = null;
       selectedNoteId = null;
