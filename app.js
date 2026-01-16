@@ -20,6 +20,7 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const nowISO = () => new Date().toISOString();
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+  const FOCUSABLE_SELECTOR = "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
 
   function safeJsonParse(s, fallback) {
     try { return JSON.parse(s); } catch { return fallback; }
@@ -80,6 +81,14 @@
 
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function isEditableTarget(target) {
+    if (!target) return false;
+    const tag = target.tagName ? target.tagName.toLowerCase() : "";
+    if (tag === "input" || tag === "textarea" || tag === "select") return true;
+    if (target.isContentEditable) return true;
+    return !!target.closest?.("[contenteditable='true']");
   }
 
   /* ---------------------------
@@ -266,7 +275,8 @@
       tapControls: true,
       rememberLastBook: true,
       punctuationPause: 80, // 0-200 slider value
-      chunkSize: 1
+      chunkSize: 1,
+      wakeLock: false
     },
     library: {
       books: [], // Book[]
@@ -559,6 +569,7 @@
   const pasteTitle = $("#paste-title");
   const pasteAddBtn = $("#paste-add-btn");
   const pasteClearBtn = $("#paste-clear-btn");
+  const pasteStatus = $("#paste-status");
 
   const librarySearch = $("#library-search");
   const librarySort = $("#library-sort");
@@ -566,6 +577,9 @@
   const libraryEmpty = $("#library-empty");
   const storageEstimate = $("#storage-estimate");
   const dangerResetBtn = $("#danger-reset-btn");
+  const emptyDemoBtn = $("#empty-demo-btn");
+  const emptyPasteBtn = $("#empty-paste-btn");
+  const emptyHelpBtn = $("#empty-help-btn");
 
   const exportBtn = $("#export-btn");
   const importDataBtn = $("#import-data-btn");
@@ -623,12 +637,21 @@
   const chunkSizeSelect = $("#chunk-size");
   const autoPauseCheckbox = $("#auto-pause");
   const tapControlsCheckbox = $("#tap-controls");
+  const wakeLockCheckbox = $("#wake-lock");
   const rememberLastBookCheckbox = $("#remember-last-book");
   const encryptExportCheckbox = $("#encrypt-export"); // stub
 
   const settingsExportBtn = $("#settings-export-btn");
   const settingsImportBtn = $("#settings-import-btn");
   const settingsResetBtn = $("#settings-reset-btn");
+
+  // Modals and toast
+  const modalConfirm = $("#modal-confirm");
+  const confirmTitle = $("#confirm-title");
+  const confirmMessage = $("#confirm-message");
+  const confirmOkBtn = $("#confirm-ok-btn");
+  const confirmCancelBtn = $("#confirm-cancel-btn");
+  const toastRegion = $("#toast-region");
 
   // Footer buttons (optional)
   const aboutBtn = $("#about-btn");
@@ -639,6 +662,10 @@
   --------------------------- */
   let currentView = "library";
   let selectedBookId = null;
+  let activeModal = null;
+  let lastFocusedEl = null;
+  let confirmResolver = null;
+  let wakeLockHandle = null;
 
   // Reader session runtime
   const reader = {
@@ -677,6 +704,8 @@
     applyThemeFromSettings();
     applyReaderStyleSettings();
     hydrateSettingsUI();
+    runSmokeChecks();
+    initDebugHelpers();
     wireEvents();
     renderAll();
     restoreLastBookIfNeeded();
@@ -688,7 +717,7 @@
   --------------------------- */
   function wireEvents() {
     // Theme toggle cycles: system -> dark -> light -> system
-    themeToggleBtn.addEventListener("click", () => {
+    themeToggleBtn?.addEventListener("click", () => {
       const cur = state.settings.theme || "system";
       const next = cur === "system" ? "dark" : cur === "dark" ? "light" : "system";
       state.settings.theme = next;
@@ -697,16 +726,19 @@
     });
 
     // Help modal
-    helpBtn.addEventListener("click", () => openModal(modalHelp));
-    modalHelp.addEventListener("click", (e) => {
+    helpBtn?.addEventListener("click", () => openModal(modalHelp, helpBtn));
+    modalHelp?.addEventListener("click", (e) => {
       const t = e.target;
       if (t && t.dataset && t.dataset.close === "true") closeModal(modalHelp);
     });
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        if (!modalHelp.hidden) closeModal(modalHelp);
-      }
+
+    modalConfirm?.addEventListener("click", (e) => {
+      const t = e.target;
+      if (t && t.dataset && t.dataset.close === "true") resolveConfirm(false);
     });
+
+    confirmOkBtn?.addEventListener("click", () => resolveConfirm(true));
+    confirmCancelBtn?.addEventListener("click", () => resolveConfirm(false));
 
     // Nav
     navButtons.forEach(btn => {
@@ -717,47 +749,47 @@
       });
     });
 
-    openLibraryBtn.addEventListener("click", () => setView("library"));
+    openLibraryBtn?.addEventListener("click", () => setView("library"));
 
     // Import tabs
-    tabFile.addEventListener("click", () => setImportTab("file"));
-    tabPaste.addEventListener("click", () => setImportTab("paste"));
+    tabFile?.addEventListener("click", () => setImportTab("file"));
+    tabPaste?.addEventListener("click", () => setImportTab("paste"));
 
     // File drop zone
-    fileDrop.addEventListener("click", () => fileInput.click());
-    fileDrop.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") fileInput.click();
+    fileDrop?.addEventListener("click", () => fileInput?.click());
+    fileDrop?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") fileInput?.click();
     });
 
     // Drag & drop
     ["dragenter", "dragover"].forEach(type => {
-      fileDrop.addEventListener(type, (e) => {
+      fileDrop?.addEventListener(type, (e) => {
         e.preventDefault();
         e.stopPropagation();
-        fileDrop.style.borderColor = "color-mix(in srgb, var(--primary) 40%, var(--border))";
+        if (fileDrop) fileDrop.style.borderColor = "color-mix(in srgb, var(--primary) 40%, var(--border))";
       });
     });
     ["dragleave", "drop"].forEach(type => {
-      fileDrop.addEventListener(type, (e) => {
+      fileDrop?.addEventListener(type, (e) => {
         e.preventDefault();
         e.stopPropagation();
-        fileDrop.style.borderColor = "";
+        if (fileDrop) fileDrop.style.borderColor = "";
       });
     });
-    fileDrop.addEventListener("drop", async (e) => {
+    fileDrop?.addEventListener("drop", async (e) => {
       const files = Array.from(e.dataTransfer?.files || []);
       if (files.length === 0) return;
       await handleFilesSelected(files);
     });
 
-    fileInput.addEventListener("change", async () => {
+    fileInput?.addEventListener("change", async () => {
       const files = Array.from(fileInput.files || []);
       if (files.length === 0) return;
       await handleFilesSelected(files);
       fileInput.value = "";
     });
 
-    demoLoadBtn.addEventListener("click", () => {
+    demoLoadBtn?.addEventListener("click", () => {
       const demo = `
 SwiftReader Demo — RSVP speed reading
 
@@ -765,7 +797,7 @@ This is a short demo text. Start at 300 WPM, then increase gradually.
 Notice the red pivot letter: your eyes stay fixed, and comprehension stays smooth.
 
 Try:
-- Space to Play/Pause
+- Space (desktop) or tap Play (mobile) to Play/Pause
 - Arrow keys to step
 - Up/Down to change speed
 - Add a note while reading
@@ -782,9 +814,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       importAuthor.value = "";
       importTags.value = "demo, rsvp";
       setImportStatus("Demo text loaded.");
+      showToast({ title: "Demo loaded", message: "Ready to add to your library.", type: "success" });
     });
 
-    importConfirmBtn.addEventListener("click", async () => {
+    importConfirmBtn?.addEventListener("click", async () => {
       const title = (importTitle.value || importBuffer.suggestedTitle || "Untitled").trim() || "Untitled";
       const author = (importAuthor.value || "").trim();
       const tags = (importTags.value || "")
@@ -794,7 +827,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
       if (!importBuffer.text) {
         // No file selected? Let user still add from file panel if they filled nothing.
-        alert("Please choose a file (TXT/MD/EPUB/PDF) or load demo text first.");
+        setImportStatus("Please choose a file or load demo text first.");
+        showToast({ title: "Add text first", message: "Choose a file or load the demo text.", type: "error" });
         return;
       }
 
@@ -812,16 +846,18 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       // Auto-open in reader
       await openBookInReader(book.id);
       setView("reader");
+      showToast({ title: "Book added", message: "Ready to read.", type: "success" });
     });
 
-    importClearBtn.addEventListener("click", () => clearFileImportUI());
+    importClearBtn?.addEventListener("click", () => clearFileImportUI());
 
     // Paste import
-    pasteAddBtn.addEventListener("click", async () => {
+    pasteAddBtn?.addEventListener("click", async () => {
       const text = normalizeText(pasteText.value || "");
       const title = (pasteTitle.value || "Pasted Text").trim() || "Pasted Text";
       if (!text) {
-        alert("Paste some text first.");
+        setPasteStatus("Paste some text before adding.");
+        showToast({ title: "Paste required", message: "Add some text to create a book.", type: "error" });
         return;
       }
       const book = await createBookFromText({
@@ -834,21 +870,36 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       upsertBook(book);
       pasteText.value = "";
       pasteTitle.value = "";
+      setPasteStatus("");
       await openBookInReader(book.id);
       setView("reader");
+      showToast({ title: "Book added", message: "Ready to read.", type: "success" });
     });
 
-    pasteClearBtn.addEventListener("click", () => {
+    pasteClearBtn?.addEventListener("click", () => {
       pasteText.value = "";
       pasteTitle.value = "";
+      setPasteStatus("");
     });
 
-    // Library interactions
-    librarySearch.addEventListener("input", () => renderLibraryList());
-    librarySort.addEventListener("change", () => renderLibraryList());
+    emptyDemoBtn?.addEventListener("click", () => demoLoadBtn?.click());
+    emptyPasteBtn?.addEventListener("click", () => {
+      setImportTab("paste");
+      pasteText?.focus();
+    });
+    emptyHelpBtn?.addEventListener("click", () => openModal(modalHelp, emptyHelpBtn));
 
-    dangerResetBtn.addEventListener("click", () => {
-      if (!confirm("This will delete all local books and notes for SwiftReader. Continue?")) return;
+    // Library interactions
+    librarySearch?.addEventListener("input", () => renderLibraryList());
+    librarySort?.addEventListener("change", () => renderLibraryList());
+
+    dangerResetBtn?.addEventListener("click", async () => {
+      const confirmed = await openConfirm({
+        title: "Reset local data",
+        message: "This will delete all local books and notes for SwiftReader. Continue?",
+        confirmText: "Reset data"
+      });
+      if (!confirmed) return;
       state = defaultState();
       saveState();
       void resetIndexedDb();
@@ -860,42 +911,46 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       hydrateSettingsUI();
       renderAll();
       setView("library");
+      showToast({ title: "Data reset", message: "All local data has been cleared.", type: "success" });
     });
 
     // Sidebar export/import
-    exportBtn.addEventListener("click", () => void exportData());
-    importDataBtn.addEventListener("click", () => importData());
+    exportBtn?.addEventListener("click", () => void exportData());
+    importDataBtn?.addEventListener("click", () => importData());
 
     // Reader controls
-    btnPlay.addEventListener("click", () => togglePlay());
-    btnBack.addEventListener("click", () => stepWords(-3));
-    btnForward.addEventListener("click", () => stepWords(+3));
-    btnBackSent.addEventListener("click", () => stepSentence(-1));
-    btnForwardSent.addEventListener("click", () => stepSentence(+1));
-    btnMark.addEventListener("click", () => addBookmark());
-    btnAddNote.addEventListener("click", () => openAddNoteFromReader());
+    btnPlay?.addEventListener("click", () => togglePlay());
+    btnBack?.addEventListener("click", () => stepWords(-3));
+    btnForward?.addEventListener("click", () => stepWords(+3));
+    btnBackSent?.addEventListener("click", () => stepSentence(-1));
+    btnForwardSent?.addEventListener("click", () => stepSentence(+1));
+    btnMark?.addEventListener("click", () => addBookmark());
+    btnAddNote?.addEventListener("click", () => openAddNoteFromReader());
 
-    wpmSlider.addEventListener("input", () => {
+    wpmSlider?.addEventListener("input", () => {
       const v = Number(wpmSlider.value);
       state.settings.defaultWpm = v;
       wpmValue.textContent = String(v);
       saveState();
     });
 
-    pauseSlider.addEventListener("input", () => {
+    pauseSlider?.addEventListener("input", () => {
       const v = Number(pauseSlider.value);
       state.settings.punctuationPause = v;
       saveState();
     });
 
     // Reader quick note box
-    saveNoteBtn.addEventListener("click", () => {
+    saveNoteBtn?.addEventListener("click", () => {
       const text = (quickNote.value || "").trim();
       if (!selectedBookId) {
-        alert("Select a book first.");
+        showToast({ title: "No book selected", message: "Open a book before saving a note.", type: "error" });
         return;
       }
-      if (!text) return;
+      if (!text) {
+        showToast({ title: "Note is empty", message: "Type a note before saving.", type: "error" });
+        return;
+      }
       const book = getBook(selectedBookId);
       const idx = getCurrentTokenIndex();
       const excerpt = makeExcerpt(book, idx, 12);
@@ -911,17 +966,18 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       quickNote.value = "";
       renderReaderNotes();
       renderNotesView();
+      showToast({ title: "Note saved", message: "Linked to the current book.", type: "success" });
     });
 
-    clearNoteBtn.addEventListener("click", () => (quickNote.value = ""));
+    clearNoteBtn?.addEventListener("click", () => (quickNote.value = ""));
 
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
       // Ignore if typing in inputs/textareas/selects
-      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
-      const typing = tag === "input" || tag === "textarea" || tag === "select";
-      if (typing) return;
-      if (!$("#view-reader").classList.contains("is-active")) {
+      if (isEditableTarget(e.target)) return;
+      if (activeModal) return;
+      const readerView = $("#view-reader");
+      if (!readerView || !readerView.classList.contains("is-active")) {
         // Allow space to open reader quickly? keep simple: only if in reader.
         return;
       }
@@ -945,42 +1001,51 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     });
 
     // Tap controls (mobile)
-    $(".rsvp-frame")?.addEventListener("click", (e) => {
+    $(".rsvp-frame")?.addEventListener("pointerup", (e) => {
       if (!state.settings.tapControls) return;
-      if (!$("#view-reader").classList.contains("is-active")) return;
+      const readerView = $("#view-reader");
+      if (!readerView || !readerView.classList.contains("is-active")) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const third = rect.width / 3;
+      if (e.pointerType === "touch") e.preventDefault();
       if (x < third) stepWords(-1);
       else if (x > third * 2) stepWords(+1);
       else togglePlay();
     });
 
     // Notes view
-    notesSearch.addEventListener("input", () => renderNotesView());
-    notesFilterBook.addEventListener("change", () => renderNotesView());
-    notesSort.addEventListener("change", () => renderNotesView());
+    notesSearch?.addEventListener("input", () => renderNotesView());
+    notesFilterBook?.addEventListener("change", () => renderNotesView());
+    notesSort?.addEventListener("change", () => renderNotesView());
 
-    noteUpdateBtn.addEventListener("click", () => {
+    noteUpdateBtn?.addEventListener("click", () => {
       if (!selectedNoteId) return;
       const note = state.notes.find(n => n.id === selectedNoteId);
       if (!note) return;
       const text = (noteEdit.value || "").trim();
       if (!text) {
-        alert("Note text cannot be empty.");
+        showToast({ title: "Note is empty", message: "Add text before updating.", type: "error" });
         return;
       }
       upsertNote({ ...note, text });
       renderNotesView();
       // Keep selection
       selectNote(selectedNoteId);
+      showToast({ title: "Note updated", message: "Your changes are saved.", type: "success" });
     });
 
-    noteDeleteBtn.addEventListener("click", () => {
+    noteDeleteBtn?.addEventListener("click", async () => {
       if (!selectedNoteId) return;
       const note = state.notes.find(n => n.id === selectedNoteId);
       if (!note) return;
-      if (!confirm("Delete this note?")) return;
+      const confirmed = await openConfirm({
+        title: "Delete note",
+        message: "Delete this note? This cannot be undone.",
+        confirmText: "Delete note"
+      });
+      if (!confirmed) return;
       state.notes = state.notes.filter(n => n.id !== selectedNoteId);
       saveState();
       void idbDelete(DB_STORES.notes, selectedNoteId);
@@ -988,10 +1053,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       clearNotePreview();
       renderNotesView();
       renderReaderNotes();
+      showToast({ title: "Note deleted", message: "The note has been removed.", type: "success" });
     });
 
     // Settings
-    defaultWpmInput.addEventListener("change", () => {
+    defaultWpmInput?.addEventListener("change", () => {
       const v = clamp(Number(defaultWpmInput.value), 150, 1200);
       state.settings.defaultWpm = v;
       wpmSlider.value = String(v);
@@ -999,52 +1065,71 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       saveState();
     });
 
-    fontSizeSlider.addEventListener("input", () => {
+    fontSizeSlider?.addEventListener("input", () => {
       const v = clamp(Number(fontSizeSlider.value), 22, 72);
       state.settings.fontSize = v;
       applyReaderStyleSettings();
       saveState();
     });
 
-    fontFamilySelect.addEventListener("change", () => {
+    fontFamilySelect?.addEventListener("change", () => {
       state.settings.fontFamily = fontFamilySelect.value;
       applyReaderStyleSettings();
       saveState();
     });
 
-    chunkSizeSelect.addEventListener("change", () => {
+    chunkSizeSelect?.addEventListener("change", () => {
       const v = clamp(Number(chunkSizeSelect.value), 1, 4);
       state.settings.chunkSize = v;
       saveState();
     });
 
-    autoPauseCheckbox.addEventListener("change", () => {
+    autoPauseCheckbox?.addEventListener("change", () => {
       state.settings.autoPause = !!autoPauseCheckbox.checked;
       saveState();
     });
 
-    tapControlsCheckbox.addEventListener("change", () => {
+    tapControlsCheckbox?.addEventListener("change", () => {
       state.settings.tapControls = !!tapControlsCheckbox.checked;
       saveState();
     });
 
-    rememberLastBookCheckbox.addEventListener("change", () => {
+    wakeLockCheckbox?.addEventListener("change", async () => {
+      state.settings.wakeLock = !!wakeLockCheckbox.checked;
+      saveState();
+      if (state.settings.wakeLock) {
+        await requestWakeLock();
+      } else {
+        await releaseWakeLock();
+      }
+    });
+
+    rememberLastBookCheckbox?.addEventListener("change", () => {
       state.settings.rememberLastBook = !!rememberLastBookCheckbox.checked;
       saveState();
     });
 
     // Export/import from settings too
-    settingsExportBtn.addEventListener("click", () => void exportData());
-    settingsImportBtn.addEventListener("click", () => importData());
+    settingsExportBtn?.addEventListener("click", () => void exportData());
+    settingsImportBtn?.addEventListener("click", () => importData());
 
-    settingsResetBtn.addEventListener("click", () => dangerResetBtn.click());
+    settingsResetBtn?.addEventListener("click", () => dangerResetBtn?.click());
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && state.settings.wakeLock && reader.isPlaying) {
+        void requestWakeLock();
+      }
+      if (document.visibilityState === "hidden") {
+        void releaseWakeLock();
+      }
+    });
 
     // Footer optional hooks
-    aboutBtn.addEventListener("click", () => {
+    aboutBtn?.addEventListener("click", () => {
       alert("SwiftReader — local-first speed reading prototype.\n\nNo accounts. No tracking. Data stays in your browser unless you export.");
     });
-    shortcutsBtn.addEventListener("click", () => {
-      alert("Shortcuts (Reader)\n\nSpace: Play/Pause\n← / →: Step word\n↑ / ↓: Speed\n");
+    shortcutsBtn?.addEventListener("click", () => {
+      alert("Shortcuts (Reader)\n\nSpace (desktop): Play/Pause\nTap Play (mobile): Play/Pause\n← / →: Step word\n↑ / ↓: Speed\n");
     });
   }
 
@@ -1084,17 +1169,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
   function setImportTab(which) {
     const isFile = which === "file";
-    tabFile.classList.toggle("is-active", isFile);
-    tabPaste.classList.toggle("is-active", !isFile);
+    tabFile?.classList.toggle("is-active", isFile);
+    tabPaste?.classList.toggle("is-active", !isFile);
 
-    tabFile.setAttribute("aria-selected", String(isFile));
-    tabPaste.setAttribute("aria-selected", String(!isFile));
+    tabFile?.setAttribute("aria-selected", String(isFile));
+    tabPaste?.setAttribute("aria-selected", String(!isFile));
 
-    panelFile.classList.toggle("is-active", isFile);
-    panelPaste.classList.toggle("is-active", !isFile);
+    panelFile?.classList.toggle("is-active", isFile);
+    panelPaste?.classList.toggle("is-active", !isFile);
 
-    panelFile.hidden = !isFile;
-    panelPaste.hidden = isFile;
+    if (panelFile) panelFile.hidden = !isFile;
+    if (panelPaste) panelPaste.hidden = isFile;
   }
 
   /* ---------------------------
@@ -1110,17 +1195,124 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   /* ---------------------------
      Modal
   --------------------------- */
-  function openModal(el) {
+  function getFocusableElements(modal) {
+    if (!modal) return [];
+    return Array.from(modal.querySelectorAll(FOCUSABLE_SELECTOR))
+      .filter(el => !el.hasAttribute("disabled") && !el.getAttribute("aria-hidden"));
+  }
+
+  function handleModalKeydown(e) {
+    if (!activeModal) return;
+    if (e.key === "Escape") {
+      if (activeModal === modalConfirm) {
+        resolveConfirm(false);
+      } else {
+        closeModal(activeModal);
+      }
+      return;
+    }
+    if (e.key !== "Tab") return;
+
+    const focusable = getFocusableElements(activeModal);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function openModal(el, opener) {
     if (!el) return;
+    if (activeModal && activeModal !== el) closeModal(activeModal, { restoreFocus: false });
+    activeModal = el;
+    lastFocusedEl = opener || document.activeElement;
     el.hidden = false;
-    // Focus first close button
-    const btn = el.querySelector("[data-close='true']");
+    document.body.classList.add("modal-open");
+    document.addEventListener("keydown", handleModalKeydown);
+    const focusable = getFocusableElements(el);
+    const btn = el.querySelector("[data-close='true']") || focusable[0];
     btn?.focus();
   }
 
-  function closeModal(el) {
+  function closeModal(el, { restoreFocus = true } = {}) {
     if (!el) return;
     el.hidden = true;
+    if (activeModal === el) {
+      activeModal = null;
+    }
+    document.body.classList.remove("modal-open");
+    document.removeEventListener("keydown", handleModalKeydown);
+    if (restoreFocus) lastFocusedEl?.focus?.();
+  }
+
+  function openConfirm({ title, message, confirmText = "Confirm", cancelText = "Cancel" } = {}) {
+    if (!modalConfirm || !confirmOkBtn || !confirmTitle || !confirmMessage || !confirmCancelBtn) {
+      showToast({ title: "Confirmation unavailable", message: "Unable to open confirmation dialog.", type: "error" });
+      return Promise.resolve(false);
+    }
+    confirmTitle.textContent = title || "Confirm action";
+    confirmMessage.textContent = message || "Are you sure you want to continue?";
+    confirmOkBtn.textContent = confirmText;
+    confirmCancelBtn.textContent = cancelText;
+    openModal(modalConfirm, document.activeElement);
+    return new Promise(resolve => {
+      confirmResolver = resolve;
+    });
+  }
+
+  function resolveConfirm(result) {
+    if (activeModal === modalConfirm) closeModal(modalConfirm);
+    if (confirmResolver) {
+      confirmResolver(!!result);
+      confirmResolver = null;
+    }
+  }
+
+  function showToast({ title, message, type = "info", duration = 3200, action } = {}) {
+    if (!toastRegion) return;
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.setAttribute("role", "status");
+    toast.dataset.type = type;
+
+    if (title) {
+      const t = document.createElement("div");
+      t.className = "toast-title";
+      t.textContent = title;
+      toast.appendChild(t);
+    }
+
+    if (message) {
+      const m = document.createElement("div");
+      m.className = "toast-text";
+      m.textContent = message;
+      toast.appendChild(m);
+    }
+
+    if (action && action.label && typeof action.onClick === "function") {
+      const actions = document.createElement("div");
+      actions.className = "toast-actions";
+      const btn = document.createElement("button");
+      btn.className = "btn btn-secondary btn-sm";
+      btn.type = "button";
+      btn.textContent = action.label;
+      btn.addEventListener("click", () => {
+        action.onClick();
+        toast.remove();
+      });
+      actions.appendChild(btn);
+      toast.appendChild(actions);
+    }
+
+    toastRegion.appendChild(toast);
+    if (duration > 0) {
+      setTimeout(() => toast.remove(), duration);
+    }
   }
 
   /* ---------------------------
@@ -1132,12 +1324,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (theme === "system") {
       root.removeAttribute("data-theme");
-      themeToggleBtn.querySelector(".icon").textContent = "☾";
+      themeToggleBtn?.querySelector(".icon")?.textContent = "☾";
       return;
     }
 
     root.setAttribute("data-theme", theme);
-    themeToggleBtn.querySelector(".icon").textContent = theme === "dark" ? "☾" : "☀";
+    themeToggleBtn?.querySelector(".icon")?.textContent = theme === "dark" ? "☾" : "☀";
   }
 
   /* ---------------------------
@@ -1154,23 +1346,55 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     let fam = "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
     if (state.settings.fontFamily === "serif") fam = "ui-serif, Georgia, Cambria, Times New Roman, Times, serif";
     if (state.settings.fontFamily === "mono") fam = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace";
-    $("#rsvp-word").style.fontFamily = fam;
+    const rsvpWord = $("#rsvp-word");
+    if (rsvpWord) rsvpWord.style.fontFamily = fam;
   }
 
   function hydrateSettingsUI() {
-    defaultWpmInput.value = String(state.settings.defaultWpm || 300);
-    wpmSlider.value = String(state.settings.defaultWpm || 300);
-    wpmValue.textContent = String(state.settings.defaultWpm || 300);
+    if (defaultWpmInput) defaultWpmInput.value = String(state.settings.defaultWpm || 300);
+    if (wpmSlider) wpmSlider.value = String(state.settings.defaultWpm || 300);
+    if (wpmValue) wpmValue.textContent = String(state.settings.defaultWpm || 300);
 
-    fontSizeSlider.value = String(state.settings.fontSize || 46);
-    fontFamilySelect.value = state.settings.fontFamily || "system";
-    chunkSizeSelect.value = String(state.settings.chunkSize || 1);
+    if (fontSizeSlider) fontSizeSlider.value = String(state.settings.fontSize || 46);
+    if (fontFamilySelect) fontFamilySelect.value = state.settings.fontFamily || "system";
+    if (chunkSizeSelect) chunkSizeSelect.value = String(state.settings.chunkSize || 1);
 
-    autoPauseCheckbox.checked = !!state.settings.autoPause;
-    tapControlsCheckbox.checked = !!state.settings.tapControls;
-    rememberLastBookCheckbox.checked = !!state.settings.rememberLastBook;
+    if (autoPauseCheckbox) autoPauseCheckbox.checked = !!state.settings.autoPause;
+    if (tapControlsCheckbox) tapControlsCheckbox.checked = !!state.settings.tapControls;
+    if (wakeLockCheckbox) wakeLockCheckbox.checked = !!state.settings.wakeLock;
+    if (rememberLastBookCheckbox) rememberLastBookCheckbox.checked = !!state.settings.rememberLastBook;
 
-    pauseSlider.value = String(state.settings.punctuationPause ?? 80);
+    if (pauseSlider) pauseSlider.value = String(state.settings.punctuationPause ?? 80);
+  }
+
+  async function requestWakeLock() {
+    if (!state.settings.wakeLock) return;
+    if (!("wakeLock" in navigator)) {
+      state.settings.wakeLock = false;
+      if (wakeLockCheckbox) wakeLockCheckbox.checked = false;
+      saveState();
+      showToast({ title: "Wake Lock unavailable", message: "This browser does not support keeping the screen awake.", type: "info" });
+      return;
+    }
+    try {
+      wakeLockHandle = await navigator.wakeLock.request("screen");
+      wakeLockHandle.addEventListener("release", () => {
+        wakeLockHandle = null;
+      });
+    } catch (err) {
+      console.warn("Wake Lock request failed", err);
+      showToast({ title: "Wake Lock failed", message: "Unable to keep the screen awake.", type: "error" });
+    }
+  }
+
+  async function releaseWakeLock() {
+    if (!wakeLockHandle) return;
+    try {
+      await wakeLockHandle.release();
+      wakeLockHandle = null;
+    } catch (err) {
+      console.warn("Wake Lock release failed", err);
+    }
   }
 
   /* ---------------------------
@@ -1178,6 +1402,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   --------------------------- */
   async function updateStorageEstimate() {
     try {
+      if (!storageEstimate) return;
       if (!navigator.storage || !navigator.storage.estimate) {
         storageEstimate.textContent = "localStorage";
         return;
@@ -1201,6 +1426,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   function setImportStatus(message) {
     if (!importStatus) return;
     importStatus.textContent = message || "";
+  }
+
+  function setPasteStatus(message) {
+    if (!pasteStatus) return;
+    pasteStatus.textContent = message || "";
   }
 
   async function extractTextFromPdf(file, onStatus) {
@@ -1289,12 +1519,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         const totalPages = result?.totalPages || 1;
         if (totalPages > 1 && text.trim().length < 300) {
           setImportStatus("Scanned PDF detected.");
-          alert("This PDF appears to be scanned or image-based. OCR is not supported yet.");
+          showToast({ title: "Scanned PDF detected", message: "OCR is not supported yet.", type: "error" });
           return;
         }
         if (!text || text.length < 40) {
           setImportStatus("No text found in PDF.");
-          alert("This PDF may be scanned or image-based. OCR is not supported yet.");
+          showToast({ title: "No text found", message: "This PDF may be scanned or image-based.", type: "error" });
           return;
         }
         importBuffer = {
@@ -1313,7 +1543,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         const { text, title } = await extractTextFromEpub(f, status => setImportStatus(status));
         if (!text || text.length < 40) {
           setImportStatus("No readable text found in EPUB.");
-          alert("This EPUB appears to be empty or protected.");
+          showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
           return;
         }
         importBuffer = {
@@ -1327,11 +1557,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         return;
       }
 
-      alert("Unsupported file type. Please choose TXT, MD, EPUB, or PDF.");
+      showToast({ title: "Unsupported file", message: "Choose TXT, MD, EPUB, or PDF.", type: "error" });
     } catch (err) {
       console.error(err);
       setImportStatus("Import failed.");
-      alert("Import failed. Please try another file.");
+      showToast({ title: "Import failed", message: "Please try another file.", type: "error" });
     }
   }
 
@@ -1413,8 +1643,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
      Library rendering
   --------------------------- */
   function renderLibraryList() {
-    const q = (librarySearch.value || "").trim().toLowerCase();
-    const sort = librarySort.value || "recent";
+    if (!bookList || !libraryEmpty) return;
+    const q = (librarySearch?.value || "").trim().toLowerCase();
+    const sort = librarySort?.value || "recent";
 
     let books = [...state.library.books];
 
@@ -1508,19 +1739,25 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       btn.appendChild(progWrap);
 
       // Context menu (right-click) / long press: simple confirm actions
-      btn.addEventListener("contextmenu", (e) => {
+      btn.addEventListener("contextmenu", async (e) => {
         e.preventDefault();
         const action = prompt(`Book actions:\n1) Delete\n2) Rename\n\nType 1 or 2`, "");
         if (action === "1") {
-          if (confirm(`Delete "${b.title}" and its notes?`)) {
-            deleteBook(b.id);
-            renderAll();
-          }
+          const confirmed = await openConfirm({
+            title: "Delete book",
+            message: `Delete "${b.title}" and its notes? This cannot be undone.`,
+            confirmText: "Delete book"
+          });
+          if (!confirmed) return;
+          deleteBook(b.id);
+          renderAll();
+          showToast({ title: "Book deleted", message: "The book and notes were removed.", type: "success" });
         } else if (action === "2") {
           const newTitle = prompt("New title:", b.title);
           if (newTitle && newTitle.trim()) {
             upsertBook({ ...b, title: newTitle.trim(), updatedAt: nowISO() });
             renderAll();
+            showToast({ title: "Book renamed", message: "Title updated.", type: "success" });
           }
         }
       });
@@ -1589,9 +1826,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     upsertBook(updated);
 
     // Sync reader sliders with settings
-    wpmSlider.value = String(state.settings.defaultWpm || 300);
-    pauseSlider.value = String(state.settings.punctuationPause ?? 80);
-    wpmValue.textContent = String(state.settings.defaultWpm || 300);
+    if (wpmSlider) wpmSlider.value = String(state.settings.defaultWpm || 300);
+    if (pauseSlider) pauseSlider.value = String(state.settings.punctuationPause ?? 80);
+    if (wpmValue) wpmValue.textContent = String(state.settings.defaultWpm || 300);
 
     // Ensure content ready
     renderReaderLoading();
@@ -1608,29 +1845,33 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const book = selectedBookId ? getBook(selectedBookId) : null;
 
     if (!book) {
-      readerBookTitle.textContent = "No book selected";
-      readerBookSub.textContent = "Choose a book from Library";
+      if (readerBookTitle) readerBookTitle.textContent = "No book selected";
+      if (readerBookSub) readerBookSub.textContent = "Choose a book from Library";
       setRSVPDisplay("Ready", "•", "Set");
-      readerProgressEl.textContent = "0%";
-      rsvpSubline.textContent = "Tap space / play to start";
-      rsvpSubline.hidden = false;
-      btnPlay.disabled = true;
+      if (readerProgressEl) readerProgressEl.textContent = "0%";
+      if (rsvpSubline) {
+        rsvpSubline.textContent = "Tap play (mobile) or press Space (desktop) to start";
+        rsvpSubline.hidden = false;
+      }
+      if (btnPlay) btnPlay.disabled = true;
       return;
     }
 
-    btnPlay.disabled = false;
-    readerBookTitle.textContent = book.title || "Untitled";
-    readerBookSub.textContent = `${book.author || "—"} • ${book.wordCount || 0} words`;
+    if (btnPlay) btnPlay.disabled = false;
+    if (readerBookTitle) readerBookTitle.textContent = book.title || "Untitled";
+    if (readerBookSub) readerBookSub.textContent = `${book.author || "—"} • ${book.wordCount || 0} words`;
 
     const tokens = getCachedTokens(book.id);
     if (!tokens.length) {
       const cached = contentCache.get(book.id);
       if (cached && (!cached.tokens || cached.tokens.length === 0)) {
-        readerBookSub.textContent = "No readable text found.";
+        if (readerBookSub) readerBookSub.textContent = "No readable text found.";
         setRSVPDisplay("No", "•", "Text");
-        rsvpSubline.textContent = "Try another file or source";
-        rsvpSubline.hidden = false;
-        btnPlay.disabled = true;
+        if (rsvpSubline) {
+          rsvpSubline.textContent = "Try another file or source";
+          rsvpSubline.hidden = false;
+        }
+        if (btnPlay) btnPlay.disabled = true;
         return;
       }
       renderReaderLoading();
@@ -1642,22 +1883,24 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const idx = clamp(book.progress?.index ?? 0, 0, Math.max(0, tokens.length - 1));
     renderTokenAtIndex(book, idx);
 
-    readerProgressEl.textContent = `${computeProgressPct(book)}%`;
+    if (readerProgressEl) readerProgressEl.textContent = `${computeProgressPct(book)}%`;
   }
 
   function renderReaderLoading() {
-    readerBookTitle.textContent = "Loading…";
-    readerBookSub.textContent = "Preparing book text";
+    if (readerBookTitle) readerBookTitle.textContent = "Loading…";
+    if (readerBookSub) readerBookSub.textContent = "Preparing book text";
     setRSVPDisplay("Loading", "•", "Book");
-    rsvpSubline.textContent = "Please wait";
-    rsvpSubline.hidden = false;
-    btnPlay.disabled = true;
+    if (rsvpSubline) {
+      rsvpSubline.textContent = "Please wait";
+      rsvpSubline.hidden = false;
+    }
+    if (btnPlay) btnPlay.disabled = true;
   }
 
   function setRSVPDisplay(left, pivot, right) {
-    rsvpLeft.textContent = left;
-    rsvpPivot.textContent = pivot;
-    rsvpRight.textContent = right;
+    if (rsvpLeft) rsvpLeft.textContent = left;
+    if (rsvpPivot) rsvpPivot.textContent = pivot;
+    if (rsvpRight) rsvpRight.textContent = right;
   }
 
   function renderTokenAtIndex(book, idx) {
@@ -1665,8 +1908,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const tok = tokens[idx];
     if (!tok) {
       setRSVPDisplay("End", "•", "Done");
-      rsvpSubline.textContent = "End of book";
-      rsvpSubline.hidden = false;
+      if (rsvpSubline) {
+        rsvpSubline.textContent = "End of book";
+        rsvpSubline.hidden = false;
+      }
       stopReader(true);
       return;
     }
@@ -1677,29 +1922,33 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const { left, pivot, right } = renderRSVPWord(first || "");
       const restText = rest.length ? ` ${rest.join(" ")}` : "";
       setRSVPDisplay(left, pivot, `${right}${restText}`);
-      rsvpSubline.hidden = true;
+      if (rsvpSubline) rsvpSubline.hidden = true;
       return;
     }
 
     if (tok.kind === "para") {
       // Show a short pause token
       setRSVPDisplay("", "¶", "");
-      rsvpSubline.textContent = "Paragraph";
-      rsvpSubline.hidden = false;
+      if (rsvpSubline) {
+        rsvpSubline.textContent = "Paragraph";
+        rsvpSubline.hidden = false;
+      }
       return;
     }
 
     if (tok.kind === "punct") {
       setRSVPDisplay("", tok.t, "");
-      rsvpSubline.textContent = "Punctuation";
-      rsvpSubline.hidden = true;
+      if (rsvpSubline) {
+        rsvpSubline.textContent = "Punctuation";
+        rsvpSubline.hidden = true;
+      }
       return;
     }
 
     // Word
     const { left, pivot, right } = renderRSVPWord(tok.t);
     setRSVPDisplay(left, pivot, right);
-    rsvpSubline.hidden = true;
+    if (rsvpSubline) rsvpSubline.hidden = true;
   }
 
   function getCurrentTokenIndex() {
@@ -1766,9 +2015,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     reader.isPlaying = true;
     reader.chunkDisplay = null;
-    btnPlay.setAttribute("aria-pressed", "true");
-    btnPlay.textContent = "⏸ Pause";
-    rsvpSubline.hidden = true;
+    btnPlay?.setAttribute("aria-pressed", "true");
+    if (btnPlay) btnPlay.textContent = "⏸ Pause";
+    if (rsvpSubline) rsvpSubline.hidden = true;
+    void requestWakeLock();
 
     // Start session timer
     if (!reader.startedAt) {
@@ -1776,9 +2026,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       reader.elapsedBefore = 0;
       reader.sessionWords = 0;
       reader.pauses = 0;
-      statAvgWpm.textContent = "—";
-      statPauses.textContent = "0";
-      statWords.textContent = "0";
+      if (statAvgWpm) statAvgWpm.textContent = "—";
+      if (statPauses) statPauses.textContent = "0";
+      if (statWords) statWords.textContent = "0";
     } else {
       // resume
       reader.startedAt = Date.now();
@@ -1798,7 +2048,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (reader.isPlaying && !hardStop) {
       reader.pauses += 1;
-      statPauses.textContent = String(reader.pauses);
+      if (statPauses) statPauses.textContent = String(reader.pauses);
     }
 
     if (reader.isPlaying) {
@@ -1810,18 +2060,19 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     reader.isPlaying = false;
     reader.nextTickAt = null;
     reader.chunkDisplay = null;
-    btnPlay.setAttribute("aria-pressed", "false");
-    btnPlay.textContent = "▶ Play";
+    btnPlay?.setAttribute("aria-pressed", "false");
+    if (btnPlay) btnPlay.textContent = "▶ Play";
+    void releaseWakeLock();
 
     if (hardStop) {
       reader.startedAt = null;
       reader.elapsedBefore = 0;
       reader.sessionWords = 0;
       reader.pauses = 0;
-      statSession.textContent = "00:00";
-      statWords.textContent = "0";
-      statAvgWpm.textContent = "—";
-      statPauses.textContent = "0";
+      if (statSession) statSession.textContent = "00:00";
+      if (statWords) statWords.textContent = "0";
+      if (statAvgWpm) statAvgWpm.textContent = "—";
+      if (statPauses) statPauses.textContent = "0";
     }
   }
 
@@ -1830,13 +2081,13 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const tick = () => {
       if (!reader.isPlaying) return;
       const elapsed = reader.elapsedBefore + (Date.now() - (reader.startedAt || Date.now()));
-      statSession.textContent = formatMs(elapsed);
+      if (statSession) statSession.textContent = formatMs(elapsed);
 
       // Avg WPM
       const minutes = elapsed / 60000;
       if (minutes > 0.05) {
         const avg = Math.round(reader.sessionWords / minutes);
-        statAvgWpm.textContent = String(avg);
+        if (statAvgWpm) statAvgWpm.textContent = String(avg);
       }
 
       requestAnimationFrame(tick);
@@ -1904,7 +2155,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (tok && tok.kind === "word") {
       const chunkWords = reader.chunkDisplay?.wordCount || 1;
       reader.sessionWords += chunkWords;
-      statWords.textContent = String(reader.sessionWords);
+      if (statWords) statWords.textContent = String(reader.sessionWords);
     }
 
     // Render token
@@ -1998,10 +2249,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function bumpWpm(delta) {
-    const cur = clamp(Number(wpmSlider.value || 300), 150, 1200);
+    const cur = clamp(Number(wpmSlider?.value || 300), 150, 1200);
     const next = clamp(cur + delta, 150, 1200);
-    wpmSlider.value = String(next);
-    wpmValue.textContent = String(next);
+    if (wpmSlider) wpmSlider.value = String(next);
+    if (wpmValue) wpmValue.textContent = String(next);
     state.settings.defaultWpm = next;
     saveState();
   }
@@ -2022,7 +2273,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     };
     upsertBook(updated);
 
-    alert("Bookmark saved.");
+    showToast({ title: "Bookmark saved", message: "You can return to this spot anytime.", type: "success" });
   }
 
   function openAddNoteFromReader() {
@@ -2070,13 +2321,25 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   /* ---------------------------
      Notes rendering
   --------------------------- */
+  function getUniqueNotes(notes = state.notes) {
+    const seen = new Set();
+    const unique = [];
+    for (const note of notes) {
+      if (!note || !note.id || seen.has(note.id)) continue;
+      seen.add(note.id);
+      unique.push(note);
+    }
+    return unique;
+  }
+
   function renderReaderNotes() {
     const bookId = selectedBookId;
+    if (!noteList) return;
     noteList.innerHTML = "";
 
     if (!bookId) return;
 
-    const notes = state.notes
+    const notes = getUniqueNotes()
       .filter(n => n.bookId === bookId)
       .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
 
@@ -2109,6 +2372,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function renderNotesView() {
+    if (!notesFilterBook || !notesAllList || !notesEmpty) return;
     // Fill book filter options
     const prev = notesFilterBook.value || "all";
     notesFilterBook.innerHTML = `<option value="all">All books</option>`;
@@ -2121,11 +2385,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     notesFilterBook.value = prev;
 
     // Apply filter/search/sort
-    const q = (notesSearch.value || "").trim().toLowerCase();
+    const q = (notesSearch?.value || "").trim().toLowerCase();
     const bookFilter = notesFilterBook.value || "all";
     const sort = notesSort.value || "recent";
 
-    let notes = [...state.notes];
+    let notes = [...getUniqueNotes()];
     if (bookFilter !== "all") notes = notes.filter(n => n.bookId === bookFilter);
     if (q) {
       notes = notes.filter(n => {
@@ -2183,6 +2447,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   async function selectNote(noteId, silent = false) {
     const note = state.notes.find(n => n.id === noteId);
     if (!note) return;
+    if (!notePreviewBook || !notePreviewText || !noteEdit) return;
     selectedNoteId = noteId;
 
     const noteIndex = typeof note.wordIndex === "number" ? note.wordIndex : note.index;
@@ -2204,9 +2469,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function clearNotePreview() {
-    notePreviewBook.textContent = "—";
-    notePreviewText.textContent = "Select a note to view/edit.";
-    noteEdit.value = "";
+    if (notePreviewBook) notePreviewBook.textContent = "—";
+    if (notePreviewText) notePreviewText.textContent = "Select a note to view/edit.";
+    if (noteEdit) noteEdit.value = "";
   }
 
   /* ---------------------------
@@ -2249,6 +2514,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    showToast({ title: "Export ready", message: "Your data download has started.", type: "success" });
   }
 
   function importData() {
@@ -2261,7 +2527,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const text = await fileToTextAsync(file);
       const parsed = safeJsonParse(text, null);
       if (!parsed || typeof parsed !== "object") {
-        alert("Invalid JSON file.");
+        showToast({ title: "Invalid file", message: "This JSON file could not be read.", type: "error" });
         return;
       }
       const imported = parsed.state ? parsed.state : parsed;
@@ -2271,11 +2537,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const incomingSettings = imported.settings || imported.state?.settings;
 
       if (!incomingBooks.length && !incomingNotes.length && !incomingContents.length) {
-        alert("Import file does not contain library data.");
+        showToast({ title: "No data found", message: "Import file does not contain library data.", type: "error" });
         return;
       }
 
-      const replace = confirm("Replace current library with imported data?\n\nOK = Replace\nCancel = Merge");
+      const replace = await openConfirm({
+        title: "Import data",
+        message: "Replace current library with imported data? Choose Cancel to merge instead.",
+        confirmText: "Replace data",
+        cancelText: "Merge instead"
+      });
 
       if (replace) {
         state = defaultState();
@@ -2340,9 +2611,60 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       applyReaderStyleSettings();
       hydrateSettingsUI();
       renderAll();
-      alert("Import completed.");
+      showToast({ title: "Import completed", message: replace ? "Library replaced." : "Library merged.", type: "success" });
     });
     input.click();
+  }
+
+  /* ---------------------------
+     QA helpers
+  --------------------------- */
+  function runSmokeChecks() {
+    const required = [
+      "#main",
+      "#view-library",
+      "#view-reader",
+      "#view-notes",
+      "#view-settings",
+      "#help-btn",
+      "#modal-help",
+      "#btn-play",
+      "#book-list",
+      "#note-list"
+    ];
+    const missing = required.filter(sel => !document.querySelector(sel));
+    if (missing.length) {
+      console.warn("SwiftReader smoke check: missing elements", missing);
+    } else {
+      console.info("SwiftReader smoke check: ok");
+    }
+  }
+
+  function initDebugHelpers() {
+    const isDev = location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.hostname === "";
+    if (!isDev) return;
+    window.SR_DEBUG = {
+      dumpState: () => JSON.parse(JSON.stringify(state)),
+      reset: () => {
+        state = defaultState();
+        saveState();
+        void resetIndexedDb();
+        stopReader(true);
+        selectedBookId = null;
+        selectedNoteId = null;
+        applyThemeFromSettings();
+        applyReaderStyleSettings();
+        hydrateSettingsUI();
+        renderAll();
+        setView("library");
+        return "State reset.";
+      },
+      openBook: async (id) => {
+        await openBookInReader(id);
+        setView("reader");
+        return `Opened ${id}`;
+      }
+    };
   }
 
   /* ---------------------------
@@ -2360,10 +2682,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
      Compatibility: unused buttons in HTML
      (Add Book just opens library import area)
   --------------------------- */
-  addBookBtn.addEventListener("click", () => {
+  addBookBtn?.addEventListener("click", () => {
     // Focus on import area
     setView("library");
-    importTitle.focus();
+    importTitle?.focus();
   });
 
 })();

@@ -22,6 +22,10 @@ body {
   color: var(--text);
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
 img, svg, video {
   max-width: 100%;
   height: auto;
@@ -780,6 +784,14 @@ button, input, textarea, select {
   font-size: 13px;
 }
 
+.empty-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
 /* ---------- Mini Card ---------- */
 .mini-card {
   border: 1px solid var(--border);
@@ -846,6 +858,8 @@ button, input, textarea, select {
   display: grid;
   place-items: center;
   overflow: hidden;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .pivot-line {
@@ -934,6 +948,11 @@ button, input, textarea, select {
   .reader-stats {
     grid-template-columns: repeat(2, 1fr);
   }
+  .reader-controls .btn-primary {
+    min-width: 160px;
+    min-height: 48px;
+    font-size: 16px;
+  }
   :root {
     --rsvpFontSize: 38px;
     --maxLeft: 12ch;
@@ -998,6 +1017,7 @@ kbd {
 
 .note-item-title {
   font-weight: 900;
+  word-break: break-word;
 }
 
 .note-item-sub {
@@ -1017,6 +1037,7 @@ kbd {
 .note-preview-text {
   margin-top: 8px;
   font-weight: 650;
+  word-break: break-word;
 }
 
 /* ---------- Misc ---------- */
@@ -1147,10 +1168,7 @@ kbd {
 
 /* ---------- Toast / Status (optional hooks for JS later) ---------- */
 .toast {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 60;
+  position: relative;
   width: min(360px, 92vw);
   border-radius: 18px;
   border: 1px solid var(--border);
@@ -1159,6 +1177,40 @@ kbd {
   padding: 12px 14px;
   display: grid;
   gap: 6px;
+}
+
+.toast[data-type="success"] {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  background: color-mix(in srgb, var(--primary) 12%, var(--card));
+}
+
+.toast[data-type="error"] {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 12%, var(--card));
+}
+
+.toast[data-type="info"] {
+  border-color: color-mix(in srgb, var(--warning) 30%, var(--border));
+  background: color-mix(in srgb, var(--warning) 10%, var(--card));
+}
+
+.toast-region {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+}
+
+@media (max-width: 720px) {
+  .toast-region {
+    right: 50%;
+    transform: translateX(50%);
+    bottom: 14px;
+    justify-items: center;
+  }
 }
 
 .toast-title {
