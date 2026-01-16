@@ -9,6 +9,7 @@
 
     <link rel="icon" href="./favicon.ico" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="manifest" href="./manifest.json" />
 
     <!-- Open Graph (optional, safe on GitHub Pages) -->
     <meta property="og:title" content="SwiftReader" />
@@ -123,7 +124,7 @@
                     <div class="file-drop-inner">
                       <div class="file-drop-title">Drop a file here</div>
                       <div class="file-drop-sub">
-                        Supported soon: <strong>PDF</strong>, <strong>EPUB</strong>, <strong>TXT</strong>
+                        Supports <strong>PDF</strong>, <strong>EPUB</strong>, <strong>TXT</strong>, <strong>MD</strong>
                       </div>
                       <div class="file-drop-actions">
                         <label class="btn btn-secondary" for="file-input">
@@ -160,9 +161,10 @@
                     </button>
                   </div>
 
+                  <div id="import-status" class="hint" role="status" aria-live="polite"></div>
+
                   <div class="hint">
-                    Tip: For V1 reliability on GitHub Pages, start with <strong>TXT</strong> and <strong>Paste</strong>.
-                    We’ll add EPUB/PDF with robust parsing next.
+                    Tip: Text-based PDFs and EPUBs work best. Scanned PDFs require OCR (not supported yet).
                   </div>
                 </div>
 
@@ -506,6 +508,17 @@
                 </div>
 
                 <div class="form-row">
+                  <label class="label" for="chunk-size">Chunk size</label>
+                  <select id="chunk-size" class="select">
+                    <option value="1">1 word (default)</option>
+                    <option value="2">2 words</option>
+                    <option value="3">3 words</option>
+                    <option value="4">4 words</option>
+                  </select>
+                  <div class="form-helper subtle">Show multiple words per beat to reduce eye fatigue.</div>
+                </div>
+
+                <div class="form-row">
                   <label class="checkbox">
                     <input id="auto-pause" type="checkbox" checked />
                     <span>Auto pause on punctuation</span>
@@ -613,6 +626,9 @@
       </div>
     </footer>
 
+    <script src="https://cdn.jsdelivr.net/npm/idb@7/build/umd.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js" defer></script>
     <script src="./app.js" defer></script>
   </body>
 </html>
