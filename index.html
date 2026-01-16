@@ -615,6 +615,19 @@
 
                 <div class="form-row">
                   <label class="checkbox">
+                    <input id="auto-remove-headers" type="checkbox" checked />
+                    <span>Auto-remove PDF headers/footers for RSVP</span>
+                  </label>
+                  <div class="form-helper subtle">Strips repeated titles/page numbers before tokenizing PDF text.</div>
+                </div>
+
+                <div class="form-row">
+                  <label class="label" for="custom-ignore-phrases">Custom ignore phrases (one per line)</label>
+                  <textarea id="custom-ignore-phrases" class="textarea" placeholder="Running title"></textarea>
+                </div>
+
+                <div class="form-row">
+                  <label class="checkbox">
                     <input id="wake-lock" type="checkbox" />
                     <span>Keep screen awake while reading (if supported)</span>
                   </label>
