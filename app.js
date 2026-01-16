@@ -254,6 +254,8 @@
   }
 
   const contentCache = new Map();
+  const wordIndexCache = new Map();
+  const pageMapCache = new Map();
 
   /* ---------------------------
      Storage Model
@@ -276,7 +278,8 @@
       rememberLastBook: true,
       punctuationPause: 80, // 0-200 slider value
       chunkSize: 1,
-      wakeLock: false
+      wakeLock: false,
+      readerMode: null
     },
     library: {
       books: [], // Book[]
@@ -450,6 +453,8 @@
 
   async function persistBookContentToIdb(bookId, rawText, tokens) {
     if (!idbReady) return;
+    wordIndexCache.delete(bookId);
+    pageMapCache.delete(bookId);
     const payload = {
       bookId,
       rawText: rawText || "",
@@ -466,6 +471,8 @@
     await idbDelete(DB_STORES.books, bookId);
     await idbDelete(DB_STORES.contents, bookId);
     contentCache.delete(bookId);
+    wordIndexCache.delete(bookId);
+    pageMapCache.delete(bookId);
     const notes = await idbGetAll(DB_STORES.notes);
     const toDelete = notes.filter(n => n.bookId === bookId);
     await Promise.all(toDelete.map(n => idbDelete(DB_STORES.notes, n.id)));
@@ -590,11 +597,18 @@
   const readerBookSub = $("#reader-book-sub");
   const wpmValue = $("#wpm-value");
   const readerProgressEl = $("#reader-progress");
+  const pageView = $("#page-view");
+  const pageProgress = $("#page-progress");
+  const progressSlider = $("#progress-slider");
+  const progressLabel = $("#progress-label");
+  const togglePageBtn = $("#toggle-page");
+  const toggleRsvpBtn = $("#toggle-rsvp");
 
   const rsvpLeft = $("#rsvp-left");
   const rsvpPivot = $("#rsvp-pivot");
   const rsvpRight = $("#rsvp-right");
   const rsvpSubline = $("#rsvp-subline");
+  const rsvpFrame = $(".rsvp-frame");
 
   const btnBackSent = $("#btn-back-sent");
   const btnBack = $("#btn-back");
@@ -616,6 +630,8 @@
   const saveNoteBtn = $("#save-note-btn");
   const clearNoteBtn = $("#clear-note-btn");
   const noteList = $("#note-list");
+  const bookmarkList = $("#bookmark-list");
+  const bookmarkEmpty = $("#bookmark-empty");
 
   // Notes view elements
   const notesSearch = $("#notes-search");
@@ -668,6 +684,10 @@
   let scrollLocked = false;
   let scrollLockY = 0;
   let wakeLockHandle = null;
+  let pageViewBookId = null;
+  let scrubberActive = false;
+  let scrubberRaf = null;
+  let pendingScrubValue = null;
 
   // Reader session runtime
   const reader = {
@@ -718,6 +738,7 @@
     applyThemeFromSettings();
     applyReaderStyleSettings();
     hydrateSettingsUI();
+    initReaderMode();
     runSmokeChecks();
     initDebugHelpers();
     wireEvents();
@@ -761,6 +782,47 @@
         if (!view) return;
         setView(view);
       });
+    });
+
+    togglePageBtn?.addEventListener("click", () => setReaderMode("page"));
+    toggleRsvpBtn?.addEventListener("click", () => setReaderMode("rsvp"));
+
+    pageView?.addEventListener("click", (event) => {
+      if (!selectedBookId) return;
+      const book = getBook(selectedBookId);
+      if (!book) return;
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) return;
+      const target = event.target;
+      const paragraph = target?.closest ? target.closest("p") : null;
+      if (!paragraph) return;
+      const paraIndex = Number(paragraph.dataset.index || 0);
+      const paragraphs = buildPageMap(book.id);
+      const para = paragraphs[paraIndex];
+      if (!para || !para.wordOffsets.length) return;
+
+      let offset = Math.floor(para.text.length / 2);
+      if (selection && selection.rangeCount) {
+        const range = selection.getRangeAt(0);
+        if (range && paragraph.contains(range.startContainer)) {
+          const preRange = range.cloneRange();
+          preRange.selectNodeContents(paragraph);
+          preRange.setEnd(range.startContainer, range.startOffset);
+          offset = preRange.toString().length;
+        }
+      }
+
+      const nearest = para.wordOffsets.reduce((closest, entry) => {
+        if (!closest) return entry;
+        const closestMid = (closest.start + closest.end) / 2;
+        const entryMid = (entry.start + entry.end) / 2;
+        return Math.abs(entryMid - offset) < Math.abs(closestMid - offset) ? entry : closest;
+      }, null);
+
+      if (!nearest) return;
+      if (reader.isPlaying) stopReader(false);
+      setTokenIndex(nearest.tokenIndex, { fromPlayback: false, syncPageView: false });
+      if (isNarrowReaderLayout()) setReaderMode("rsvp");
     });
 
     openLibraryBtn?.addEventListener("click", () => setView("library"));
@@ -954,6 +1016,22 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       saveState();
     });
 
+    progressSlider?.addEventListener("pointerdown", () => {
+      scrubberActive = true;
+      if (reader.isPlaying) stopReader(false);
+    });
+
+    progressSlider?.addEventListener("input", () => {
+      const value = Number(progressSlider.value);
+      scheduleScrub(value, false);
+    });
+
+    progressSlider?.addEventListener("change", () => {
+      const value = Number(progressSlider.value);
+      scrubberActive = false;
+      scheduleScrub(value, true);
+    });
+
     // Reader quick note box
     saveNoteBtn?.addEventListener("click", () => {
       const text = (quickNote.value || "").trim();
@@ -967,13 +1045,14 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
       const book = getBook(selectedBookId);
       const idx = getCurrentTokenIndex();
+      const wordIndex = getWordIndexForTokenIndex(book.id, idx);
       const excerpt = makeExcerpt(book, idx, 12);
       upsertNote({
         id: null,
         bookId: book.id,
         bookTitle: book.title,
         index: idx,
-        wordIndex: idx,
+        wordIndex,
         excerpt,
         text
       });
@@ -1014,19 +1093,55 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
     });
 
-    // Tap controls (mobile)
-    $(".rsvp-frame")?.addEventListener("pointerup", (e) => {
-      if (!state.settings.tapControls) return;
+    // RSVP gestures (mobile-first)
+    let gestureStart = null;
+    rsvpFrame?.addEventListener("pointerdown", (e) => {
       const readerView = $("#view-reader");
       if (!readerView || !readerView.classList.contains("is-active")) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
+      gestureStart = {
+        x: e.clientX,
+        y: e.clientY,
+        time: performance.now()
+      };
+      rsvpFrame.setPointerCapture?.(e.pointerId);
+    });
+
+    rsvpFrame?.addEventListener("pointerup", (e) => {
+      if (!state.settings.tapControls) return;
+      const readerView = $("#view-reader");
+      if (!readerView || !readerView.classList.contains("is-active")) return;
+      if (!gestureStart) return;
+      const dx = e.clientX - gestureStart.x;
+      const dy = e.clientY - gestureStart.y;
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      const threshold = 40;
+
+      if (e.pointerType === "touch") e.preventDefault();
+
+      if (absX > threshold || absY > threshold) {
+        if (absX > absY) {
+          stepWords(dx > 0 ? 3 : -3);
+        } else {
+          bumpWpm(dy < 0 ? 10 : -10);
+        }
+        gestureStart = null;
+        return;
+      }
+
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const third = rect.width / 3;
-      if (e.pointerType === "touch") e.preventDefault();
       if (x < third) stepWords(-1);
       else if (x > third * 2) stepWords(+1);
       else togglePlay();
+
+      gestureStart = null;
+    });
+
+    rsvpFrame?.addEventListener("pointercancel", () => {
+      gestureStart = null;
     });
 
     // Notes view
@@ -1136,6 +1251,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       if (document.visibilityState === "hidden") {
         void releaseWakeLock();
       }
+    });
+
+    window.addEventListener("resize", () => {
+      scheduleRsvpFit();
+      setReaderMode(state.settings.readerMode || (isNarrowReaderLayout() ? "page" : "rsvp"), { persist: false });
     });
 
     // Footer optional hooks
@@ -1396,6 +1516,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (state.settings.fontFamily === "mono") fam = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace";
     const rsvpWord = $("#rsvp-word");
     if (rsvpWord) rsvpWord.style.fontFamily = fam;
+    scheduleRsvpFit();
   }
 
   function hydrateSettingsUI() {
@@ -1816,9 +1937,56 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function computeProgressPct(book) {
-    const total = Math.max(1, (book.tokenCount || (book.tokens || []).length));
-    const idx = clamp(book.progress?.index ?? 0, 0, total - 1);
-    return Math.round((idx / (total - 1)) * 100);
+    const totalWords = Math.max(1, getTotalWordsForBook(book));
+    const idx = clamp(book.progress?.index ?? 0, 0, Math.max(0, getTokenCountForBook(book) - 1));
+    const wordIdx = getWordIndexForTokenIndex(book?.id, idx);
+    return Math.round((wordIdx / Math.max(1, totalWords - 1)) * 100);
+  }
+
+  function getWordIndexMap(bookId) {
+    if (!bookId) return null;
+    if (wordIndexCache.has(bookId)) return wordIndexCache.get(bookId);
+    const tokens = getCachedTokens(bookId);
+    if (!tokens.length) return null;
+    const wordIndexToToken = [];
+    const tokenIndexToWord = new Array(tokens.length).fill(-1);
+    let wordIndex = 0;
+    tokens.forEach((tok, i) => {
+      if (tok.kind === "word") {
+        wordIndexToToken.push(i);
+        tokenIndexToWord[i] = wordIndex;
+        wordIndex += 1;
+      }
+    });
+    const map = { wordIndexToToken, tokenIndexToWord };
+    wordIndexCache.set(bookId, map);
+    return map;
+  }
+
+  function getTotalWordsForBook(book) {
+    if (!book) return 0;
+    if (typeof book.wordCount === "number") return book.wordCount;
+    const map = getWordIndexMap(book.id);
+    return map ? map.wordIndexToToken.length : 0;
+  }
+
+  function getWordIndexForTokenIndex(bookId, tokenIndex) {
+    const map = getWordIndexMap(bookId);
+    if (!map) return 0;
+    let idx = clamp(tokenIndex, 0, map.tokenIndexToWord.length - 1);
+    let wordIdx = map.tokenIndexToWord[idx];
+    while (idx > 0 && wordIdx < 0) {
+      idx -= 1;
+      wordIdx = map.tokenIndexToWord[idx];
+    }
+    return Math.max(0, wordIdx);
+  }
+
+  function getTokenIndexForWordIndex(bookId, wordIndex) {
+    const map = getWordIndexMap(bookId);
+    if (!map) return 0;
+    const clamped = clamp(wordIndex, 0, Math.max(0, map.wordIndexToToken.length - 1));
+    return map.wordIndexToToken[clamped] ?? 0;
   }
 
   function getCachedTokens(bookId) {
@@ -1837,9 +2005,139 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return Array.isArray(book.tokens) ? book.tokens.length : 0;
   }
 
+  function buildPageMap(bookId) {
+    if (!bookId) return [];
+    if (pageMapCache.has(bookId)) return pageMapCache.get(bookId);
+    const tokens = getCachedTokens(bookId);
+    if (!tokens.length) return [];
+
+    const paragraphs = [];
+    let current = {
+      startTokenIndex: null,
+      endTokenIndex: null,
+      wordOffsets: [],
+      text: "",
+      wordStartIndex: null,
+      wordEndIndex: null
+    };
+    let cursor = 0;
+    let globalWordIndex = 0;
+
+    const finalizeParagraph = () => {
+      if (!current.text) return;
+      current.endTokenIndex = current.endTokenIndex ?? current.startTokenIndex ?? 0;
+      current.wordStartIndex = current.wordOffsets.length ? current.wordOffsets[0].wordIndex : globalWordIndex;
+      current.wordEndIndex = current.wordOffsets.length
+        ? current.wordOffsets[current.wordOffsets.length - 1].wordIndex
+        : current.wordStartIndex;
+      paragraphs.push(current);
+      current = {
+        startTokenIndex: null,
+        endTokenIndex: null,
+        wordOffsets: [],
+        text: "",
+        wordStartIndex: null,
+        wordEndIndex: null
+      };
+      cursor = 0;
+    };
+
+    tokens.forEach((tok, i) => {
+      if (tok.kind === "para") {
+        finalizeParagraph();
+        return;
+      }
+
+      if (current.startTokenIndex === null) current.startTokenIndex = i;
+      current.endTokenIndex = i;
+
+      if (tok.kind === "word") {
+        if (current.text) {
+          current.text += " ";
+          cursor += 1;
+        }
+        const start = cursor;
+        current.text += tok.t;
+        cursor += tok.t.length;
+        current.wordOffsets.push({
+          tokenIndex: i,
+          wordIndex: globalWordIndex,
+          start,
+          end: cursor
+        });
+        globalWordIndex += 1;
+      } else if (tok.kind === "punct") {
+        current.text += tok.t;
+        cursor += tok.t.length;
+      }
+    });
+
+    finalizeParagraph();
+    pageMapCache.set(bookId, paragraphs);
+    return paragraphs;
+  }
+
+  function renderPageView(book) {
+    if (!pageView || !pageProgress) return;
+    if (!book) {
+      pageView.innerHTML = "<p class=\"subtle\">Select a book to start reading.</p>";
+      pageProgress.textContent = "0% • word 0 / 0";
+      return;
+    }
+    const tokens = getCachedTokens(book.id);
+    if (!tokens.length) {
+      pageView.innerHTML = "<p class=\"subtle\">Loading text…</p>";
+      pageProgress.textContent = "0% • word 0 / 0";
+      return;
+    }
+
+    const paragraphs = buildPageMap(book.id);
+    if (!paragraphs.length) {
+      pageView.innerHTML = "<p class=\"subtle\">No readable text found.</p>";
+      return;
+    }
+
+    pageView.innerHTML = "";
+    const fragment = document.createDocumentFragment();
+    paragraphs.forEach((para, idx) => {
+      const p = document.createElement("p");
+      p.textContent = para.text;
+      p.dataset.index = String(idx);
+      fragment.appendChild(p);
+    });
+    pageView.appendChild(fragment);
+    updateProgressUI(book);
+  }
+
   /* ---------------------------
      Reader logic
   --------------------------- */
+  function isNarrowReaderLayout() {
+    return window.matchMedia("(max-width: 1100px)").matches;
+  }
+
+  function initReaderMode() {
+    if (!state.settings.readerMode) {
+      state.settings.readerMode = isNarrowReaderLayout() ? "page" : "rsvp";
+      saveState();
+    }
+    setReaderMode(state.settings.readerMode, { persist: false });
+  }
+
+  function setReaderMode(mode, { persist = true } = {}) {
+    if (!["page", "rsvp"].includes(mode)) return;
+    const readerView = $("#view-reader");
+    if (readerView) readerView.dataset.readerMode = mode;
+    togglePageBtn?.classList.toggle("is-active", mode === "page");
+    toggleRsvpBtn?.classList.toggle("is-active", mode === "rsvp");
+    togglePageBtn?.setAttribute("aria-selected", mode === "page" ? "true" : "false");
+    toggleRsvpBtn?.setAttribute("aria-selected", mode === "rsvp" ? "true" : "false");
+    if (persist) {
+      state.settings.readerMode = mode;
+      saveState();
+    }
+  }
+
   function restoreLastBookIfNeeded() {
     if (!state.settings.rememberLastBook) return;
     const lastId = state.library.lastOpenedBookId;
@@ -1902,6 +2200,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         rsvpSubline.hidden = false;
       }
       if (btnPlay) btnPlay.disabled = true;
+      pageViewBookId = null;
+      renderPageView(null);
+      updateProgressUI(null);
+      renderReaderBookmarks();
       return;
     }
 
@@ -1930,8 +2232,13 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     // Render current token
     const idx = clamp(book.progress?.index ?? 0, 0, Math.max(0, tokens.length - 1));
     renderTokenAtIndex(book, idx);
+    updateProgressUI(book);
+    renderReaderBookmarks();
 
-    if (readerProgressEl) readerProgressEl.textContent = `${computeProgressPct(book)}%`;
+    if (pageViewBookId !== book.id || !pageMapCache.has(book.id)) {
+      renderPageView(book);
+      pageViewBookId = book.id;
+    }
   }
 
   function renderReaderLoading() {
@@ -1943,12 +2250,122 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       rsvpSubline.hidden = false;
     }
     if (btnPlay) btnPlay.disabled = true;
+    if (pageView) {
+      pageView.innerHTML = "<p class=\"subtle\">Loading text…</p>";
+    }
+    if (pageProgress) pageProgress.textContent = "0% • word 0 / 0";
+  }
+
+  function updateProgressUI(book) {
+    if (!readerProgressEl || !progressLabel || !progressSlider || !pageProgress) return;
+    if (!book) {
+      readerProgressEl.textContent = "0%";
+      progressLabel.textContent = "0% • word 0 / 0";
+      pageProgress.textContent = "0% • word 0 / 0";
+      progressSlider.value = "0";
+      progressSlider.max = "0";
+      return;
+    }
+
+    const totalWords = Math.max(0, getTotalWordsForBook(book));
+    const tokenIndex = clamp(book.progress?.index ?? 0, 0, Math.max(0, getTokenCountForBook(book) - 1));
+    const wordIndex = totalWords ? getWordIndexForTokenIndex(book.id, tokenIndex) : 0;
+    const pct = computeProgressPct(book);
+    readerProgressEl.textContent = `${pct}%`;
+    const label = `${pct}% • word ${totalWords ? wordIndex + 1 : 0} / ${totalWords || 0}`;
+    progressLabel.textContent = label;
+    pageProgress.textContent = label;
+
+    if (!scrubberActive) {
+      progressSlider.max = String(Math.max(0, totalWords - 1));
+      progressSlider.value = String(Math.min(wordIndex, Math.max(0, totalWords - 1)));
+    }
+  }
+
+  function scheduleScrub(value, commit) {
+    pendingScrubValue = { value, commit };
+    if (scrubberRaf) return;
+    scrubberRaf = requestAnimationFrame(() => {
+      const pending = pendingScrubValue;
+      scrubberRaf = null;
+      pendingScrubValue = null;
+      if (!pending) return;
+      applyScrub(pending.value, pending.commit);
+    });
+  }
+
+  function applyScrub(wordIndex, commit) {
+    const book = selectedBookId ? getBook(selectedBookId) : null;
+    if (!book) return;
+    const totalWords = Math.max(1, getTotalWordsForBook(book));
+    const clamped = clamp(wordIndex, 0, Math.max(0, totalWords - 1));
+    const tokenIndex = getTokenIndexForWordIndex(book.id, clamped);
+    setTokenIndex(tokenIndex, { fromPlayback: false, syncPageView: true });
+    if (commit && isNarrowReaderLayout()) setReaderMode("rsvp");
+  }
+
+  function scrollPageViewToTokenIndex(book, tokenIndex, behavior = "smooth") {
+    if (!pageView || !book) return;
+    const paragraphs = buildPageMap(book.id);
+    if (!paragraphs.length) return;
+    const target = paragraphs.findIndex(p => tokenIndex >= p.startTokenIndex && tokenIndex <= p.endTokenIndex);
+    if (target < 0) return;
+    const targetEl = pageView.querySelector(`p[data-index="${target}"]`);
+    if (targetEl) {
+      targetEl.scrollIntoView({ behavior, block: "center", inline: "nearest" });
+    }
   }
 
   function setRSVPDisplay(left, pivot, right) {
     if (rsvpLeft) rsvpLeft.textContent = left;
     if (rsvpPivot) rsvpPivot.textContent = pivot;
     if (rsvpRight) rsvpRight.textContent = right;
+    scheduleRsvpFit();
+  }
+
+  function scheduleRsvpFit() {
+    if (!rsvpFrame || !$("#rsvp-word")) return;
+    requestAnimationFrame(() => fitRsvpWord());
+  }
+
+  function fitRsvpWord() {
+    const rsvpWord = $("#rsvp-word");
+    if (!rsvpFrame || !rsvpWord) return;
+    const baseSize = clamp(Number(state.settings.fontSize || 46), 22, 72);
+    const style = getComputedStyle(rsvpFrame);
+    const baseLeft = parseFloat(style.getPropertyValue("--maxLeft")) || 14;
+    const baseRight = parseFloat(style.getPropertyValue("--maxRight")) || 20;
+
+    let size = baseSize;
+    let left = baseLeft;
+    let right = baseRight;
+
+    const apply = () => {
+      rsvpWord.style.fontSize = `${size}px`;
+      rsvpFrame.style.setProperty("--rsvpMaxLeft", `${left}ch`);
+      rsvpFrame.style.setProperty("--rsvpMaxRight", `${right}ch`);
+    };
+
+    apply();
+    let frameRect = rsvpFrame.getBoundingClientRect();
+    let wordRect = rsvpWord.getBoundingClientRect();
+    let attempts = 0;
+
+    while (wordRect.width > frameRect.width - 8 && attempts < 4) {
+      size = Math.max(baseSize - 8, size - 2);
+      left = Math.max(6, left - 1);
+      right = Math.max(8, right - 1);
+      apply();
+      frameRect = rsvpFrame.getBoundingClientRect();
+      wordRect = rsvpWord.getBoundingClientRect();
+      attempts += 1;
+    }
+
+    if (wordRect.width <= frameRect.width - 8 && attempts === 0) {
+      rsvpWord.style.fontSize = `${baseSize}px`;
+      rsvpFrame.style.setProperty("--rsvpMaxLeft", `${baseLeft}ch`);
+      rsvpFrame.style.setProperty("--rsvpMaxRight", `${baseRight}ch`);
+    }
   }
 
   function renderTokenAtIndex(book, idx) {
@@ -2006,7 +2423,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return clamp(book.progress?.index ?? 0, 0, Math.max(0, total - 1));
   }
 
-  function setTokenIndex(idx, { fromPlayback = false } = {}) {
+  function setTokenIndex(idx, { fromPlayback = false, syncPageView = false } = {}) {
     const book = selectedBookId ? getBook(selectedBookId) : null;
     if (!book) return;
     if (!fromPlayback) reader.chunkDisplay = null;
@@ -2037,6 +2454,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     upsertBook(updated);
     renderReader();
     renderLibraryList();
+
+    if (syncPageView && !reader.isPlaying) {
+      scrollPageViewToTokenIndex(book, clamped, "auto");
+    }
   }
 
   function togglePlay() {
@@ -2255,7 +2676,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const tokens = getCachedTokens(book.id);
     if (!tokens.length) return;
     const next = clamp(idx + delta, 0, Math.max(0, tokens.length - 1));
-    setTokenIndex(next, { fromPlayback: false });
+    setTokenIndex(next, { fromPlayback: false, syncPageView: true });
     renderReader();
     renderReaderNotes();
   }
@@ -2291,7 +2712,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       target = clamp(i + 1, 0, tokens.length - 1);
     }
 
-    setTokenIndex(target, { fromPlayback: false });
+    setTokenIndex(target, { fromPlayback: false, syncPageView: true });
     renderReader();
     renderReaderNotes();
   }
@@ -2310,7 +2731,14 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (!book) return;
 
     const idx = getCurrentTokenIndex();
-    const bm = { id: uid("bm"), index: idx, createdAt: nowISO() };
+    const wordIndex = getWordIndexForTokenIndex(book.id, idx);
+    const bm = {
+      id: uid("bm"),
+      index: idx,
+      wordIndex,
+      createdAt: nowISO(),
+      snippet: makeExcerpt(book, idx, 8)
+    };
     const updated = {
       ...book,
       progress: {
@@ -2320,6 +2748,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       updatedAt: nowISO()
     };
     upsertBook(updated);
+    renderReaderBookmarks();
 
     showToast({ title: "Bookmark saved", message: "You can return to this spot anytime.", type: "success" });
   }
@@ -2419,6 +2848,48 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
   }
 
+  function renderReaderBookmarks() {
+    if (!bookmarkList || !bookmarkEmpty) return;
+    bookmarkList.innerHTML = "";
+    const book = selectedBookId ? getBook(selectedBookId) : null;
+    if (!book) {
+      bookmarkEmpty.hidden = false;
+      return;
+    }
+    const bookmarks = Array.isArray(book.progress?.bookmarks) ? book.progress.bookmarks : [];
+    if (!bookmarks.length) {
+      bookmarkEmpty.hidden = false;
+      return;
+    }
+    bookmarkEmpty.hidden = true;
+
+    bookmarks.slice(0, 20).forEach(bm => {
+      const li = document.createElement("li");
+      li.className = "bookmark-item";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "bookmark-button";
+      const wordIndex = typeof bm.wordIndex === "number"
+        ? bm.wordIndex
+        : getWordIndexForTokenIndex(book.id, bm.index ?? 0);
+      const pct = computeProgressPct({ ...book, progress: { ...book.progress, index: bm.index ?? 0 } });
+      const meta = document.createElement("div");
+      meta.className = "bookmark-meta";
+      meta.textContent = `${pct}% • word ${wordIndex + 1}`;
+      const snippet = document.createElement("div");
+      snippet.textContent = bm.snippet || makeExcerpt(book, bm.index ?? 0, 10) || "Saved location";
+      button.appendChild(meta);
+      button.appendChild(snippet);
+      button.addEventListener("click", () => {
+        if (reader.isPlaying) stopReader(false);
+        setTokenIndex(bm.index ?? 0, { fromPlayback: false, syncPageView: true });
+        if (isNarrowReaderLayout()) setReaderMode("rsvp");
+      });
+      li.appendChild(button);
+      bookmarkList.appendChild(li);
+    });
+  }
+
   function renderNotesView() {
     if (!notesFilterBook || !notesAllList || !notesEmpty) return;
     // Fill book filter options
@@ -2498,8 +2969,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (!notePreviewBook || !notePreviewText || !noteEdit) return;
     selectedNoteId = noteId;
 
-    const noteIndex = typeof note.wordIndex === "number" ? note.wordIndex : note.index;
-    notePreviewBook.textContent = `${note.bookTitle || "—"} • at index ${noteIndex}`;
+    const noteWordIndex = typeof note.wordIndex === "number"
+      ? note.wordIndex
+      : getWordIndexForTokenIndex(note.bookId, note.index ?? 0);
+    notePreviewBook.textContent = `${note.bookTitle || "—"} • at word ${noteWordIndex + 1}`;
     notePreviewText.textContent = note.text;
     noteEdit.value = note.text;
 
@@ -2510,7 +2983,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         await openBookInReader(book.id);
         setView("reader");
         stepWords(0); // re-render
-        setTokenIndex(noteIndex, { fromPlayback: false });
+        const tokenIndex = typeof note.index === "number"
+          ? note.index
+          : getTokenIndexForWordIndex(note.bookId, noteWordIndex);
+        setTokenIndex(tokenIndex, { fromPlayback: false, syncPageView: true });
         renderReaderNotes();
       }
     }
