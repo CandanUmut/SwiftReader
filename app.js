@@ -281,6 +281,9 @@
       wakeLock: false,
       readerMode: null
     },
+    reader: {
+      currentBookId: null
+    },
     library: {
       books: [], // Book[]
       lastOpenedBookId: null,
@@ -298,6 +301,7 @@
   //   sourceType:"paste"|"txt"|"md"|"epub"|"pdf",
   //   text, tokens, wordCount, tokenCount, contentStored,
   //   progress: { index:number, updatedAt, bookmarks: [{id, index, createdAt}] },
+  //   readerState: { currentWordIndex, currentPdfPage, wpm, pause, syncRsvpToPage },
   //   stats: { openedAt, lastSessionAt, totalReadWords }
   // }
   //
@@ -318,6 +322,7 @@
       ...base,
       ...parsed,
       settings: { ...base.settings, ...(parsed.settings || {}) },
+      reader: { ...base.reader, ...(parsed.reader || {}) },
       library: { ...base.library, ...(parsed.library || {}) },
       notes: Array.isArray(parsed.notes) ? parsed.notes : [],
       storage: { ...base.storage, ...(parsed.storage || {}) }
@@ -374,6 +379,13 @@
         updatedAt: b?.progress?.updatedAt || nowISO(),
         bookmarks: Array.isArray(b?.progress?.bookmarks) ? b.progress.bookmarks : []
       },
+      readerState: {
+        currentWordIndex: typeof b?.readerState?.currentWordIndex === "number" ? b.readerState.currentWordIndex : 0,
+        currentPdfPage: typeof b?.readerState?.currentPdfPage === "number" ? b.readerState.currentPdfPage : 1,
+        wpm: typeof b?.readerState?.wpm === "number" ? b.readerState.wpm : 300,
+        pause: typeof b?.readerState?.pause === "number" ? b.readerState.pause : 80,
+        syncRsvpToPage: !!b?.readerState?.syncRsvpToPage
+      },
       stats: {
         openedAt: b?.stats?.openedAt || null,
         lastSessionAt: b?.stats?.lastSessionAt || null,
@@ -391,6 +403,8 @@
     // Clamp progress
     const totalTokens = Math.max(0, nb.tokenCount || nb.tokens.length || 0);
     nb.progress.index = clamp(nb.progress.index, 0, Math.max(0, totalTokens - 1));
+    nb.readerState.currentWordIndex = Math.max(0, nb.readerState.currentWordIndex || 0);
+    nb.readerState.currentPdfPage = Math.max(1, nb.readerState.currentPdfPage || 1);
     return nb;
   }
 
@@ -413,6 +427,20 @@
 
   function getBook(bookId) {
     return state.library.books.find(b => b.id === bookId) || null;
+  }
+
+  function updateBookReaderState(bookId, changes) {
+    const book = getBook(bookId);
+    if (!book) return null;
+    const updated = {
+      ...book,
+      readerState: {
+        ...book.readerState,
+        ...changes
+      }
+    };
+    upsertBook(updated);
+    return updated;
   }
 
   function upsertNote(note) {
@@ -451,7 +479,7 @@
     await idbPut(DB_STORES.books, payload);
   }
 
-  async function persistBookContentToIdb(bookId, rawText, tokens) {
+  async function persistBookContentToIdb(bookId, rawText, tokens, extra = {}) {
     if (!idbReady) return;
     wordIndexCache.delete(bookId);
     pageMapCache.delete(bookId);
@@ -460,7 +488,8 @@
       rawText: rawText || "",
       tokens: Array.isArray(tokens) ? tokens : [],
       tokenCount: Array.isArray(tokens) ? tokens.length : 0,
-      updatedAt: nowISO()
+      updatedAt: nowISO(),
+      ...extra
     };
     await idbPut(DB_STORES.contents, payload);
     contentCache.set(bookId, payload);
@@ -603,6 +632,20 @@
   const progressLabel = $("#progress-label");
   const togglePageBtn = $("#toggle-page");
   const toggleRsvpBtn = $("#toggle-rsvp");
+  const documentViewer = $("#document-viewer");
+  const viewerStatus = $("#viewer-status");
+  const pdfViewer = $("#pdf-viewer");
+  const pdfCanvas = $("#pdf-canvas");
+  const pdfPrevBtn = $("#pdf-prev-btn");
+  const pdfNextBtn = $("#pdf-next-btn");
+  const pdfPageInput = $("#pdf-page-input");
+  const pdfPageTotal = $("#pdf-page-total");
+  const pdfZoomInBtn = $("#pdf-zoom-in");
+  const pdfZoomOutBtn = $("#pdf-zoom-out");
+  const pdfZoomLabel = $("#pdf-zoom-label");
+  const syncRsvpToggle = $("#sync-rsvp-toggle");
+  const epubViewer = $("#epub-viewer");
+  const viewerControls = $(".viewer-controls");
 
   const rsvpLeft = $("#rsvp-left");
   const rsvpPivot = $("#rsvp-pivot");
@@ -688,6 +731,24 @@
   let scrubberActive = false;
   let scrubberRaf = null;
   let pendingScrubValue = null;
+  let pdfSyncTimer = null;
+  let pdfSyncTarget = null;
+
+  const pdfState = {
+    doc: null,
+    page: 1,
+    total: 1,
+    scale: 1,
+    rendering: false,
+    queuedPage: null,
+    currentBookId: null
+  };
+
+  const epubState = {
+    book: null,
+    rendition: null,
+    currentBookId: null
+  };
 
   // Reader session runtime
   const reader = {
@@ -708,6 +769,7 @@
   // Import buffer for file panel
   let importBuffer = {
     files: [],
+    items: [],
     text: "",
     sourceType: null,
     suggestedTitle: ""
@@ -825,6 +887,48 @@
       if (isNarrowReaderLayout()) setReaderMode("rsvp");
     });
 
+    pdfCanvas?.addEventListener("click", () => {
+      if (!selectedBookId) return;
+      const book = getBook(selectedBookId);
+      if (!book || book.sourceType !== "pdf") return;
+      const content = contentCache.get(book.id);
+      const pageRanges = content?.pageRanges;
+      if (!Array.isArray(pageRanges) || !pageRanges.length) return;
+      const currentPage = pdfState.page || 1;
+      const range = pageRanges.find(r => r.page === currentPage);
+      if (!range || typeof range.start !== "number") return;
+      if (reader.isPlaying) stopReader(false);
+      const tokenIndex = getTokenIndexForWordIndex(book.id, range.start);
+      setTokenIndex(tokenIndex, { fromPlayback: false, syncPageView: false });
+      if (isNarrowReaderLayout()) setReaderMode("rsvp");
+    });
+
+    pdfPrevBtn?.addEventListener("click", () => jumpPdfPage(-1));
+    pdfNextBtn?.addEventListener("click", () => jumpPdfPage(1));
+    pdfZoomInBtn?.addEventListener("click", () => adjustPdfZoom(0.1));
+    pdfZoomOutBtn?.addEventListener("click", () => adjustPdfZoom(-0.1));
+    pdfPageInput?.addEventListener("change", () => {
+      const value = Number(pdfPageInput.value);
+      setPdfPage(value, { userInitiated: true });
+    });
+
+    syncRsvpToggle?.addEventListener("change", () => {
+      const book = selectedBookId ? getBook(selectedBookId) : null;
+      if (!book) return;
+      const updated = {
+        ...book,
+        readerState: {
+          ...book.readerState,
+          syncRsvpToPage: !!syncRsvpToggle.checked
+        }
+      };
+      upsertBook(updated);
+      if (syncRsvpToggle.checked) {
+        const wordIndex = getWordIndexForTokenIndex(book.id, getCurrentTokenIndex());
+        syncRsvpToPdfPage(pdfState.page, { wordIndex, userInitiated: false });
+      }
+    });
+
     openLibraryBtn?.addEventListener("click", () => setView("library"));
 
     // Import tabs
@@ -832,7 +936,11 @@
     tabPaste?.addEventListener("click", () => setImportTab("paste"));
 
     // File drop zone
-    fileDrop?.addEventListener("click", () => fileInput?.click());
+    fileDrop?.addEventListener("click", (e) => {
+      const target = e.target;
+      if (target?.closest?.("label[for='file-input']")) return;
+      fileInput?.click();
+    });
     fileDrop?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") fileInput?.click();
     });
@@ -855,12 +963,14 @@
     fileDrop?.addEventListener("drop", async (e) => {
       const files = Array.from(e.dataTransfer?.files || []);
       if (files.length === 0) return;
+      showToast({ title: "Reading files", message: "Starting import…", type: "info" });
       await handleFilesSelected(files);
     });
 
     fileInput?.addEventListener("change", async () => {
       const files = Array.from(fileInput.files || []);
       if (files.length === 0) return;
+      showToast({ title: "Reading files", message: "Starting import…", type: "info" });
       await handleFilesSelected(files);
       fileInput.value = "";
     });
@@ -882,6 +992,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 `;
       importBuffer = {
         files: [],
+        items: [],
         text: normalizeText(demo),
         sourceType: "paste",
         suggestedTitle: "SwiftReader Demo"
@@ -894,26 +1005,53 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     });
 
     importConfirmBtn?.addEventListener("click", async () => {
-      const title = (importTitle.value || importBuffer.suggestedTitle || "Untitled").trim() || "Untitled";
       const author = (importAuthor.value || "").trim();
       const tags = (importTags.value || "")
         .split(",")
         .map(s => s.trim())
         .filter(Boolean);
 
-      if (!importBuffer.text) {
+      const bufferItems = Array.isArray(importBuffer.items) ? importBuffer.items : [];
+      const hasItems = bufferItems.length > 0;
+      if (!hasItems && !importBuffer.text) {
         // No file selected? Let user still add from file panel if they filled nothing.
         setImportStatus("Please choose a file or load demo text first.");
         showToast({ title: "Add text first", message: "Choose a file or load the demo text.", type: "error" });
         return;
       }
+      if (bufferItems.length > 1) {
+        const created = [];
+        for (const item of bufferItems) {
+          const book = await createBookFromText({
+            title: item.suggestedTitle || "Untitled",
+            author,
+            tags,
+            text: item.text,
+            sourceType: item.sourceType || "paste",
+            contentExtras: item.contentExtras
+          });
+          upsertBook(book);
+          created.push(book);
+        }
+        clearFileImportUI();
+        const lastBook = created[created.length - 1];
+        if (lastBook) {
+          await openBookInReader(lastBook.id);
+          setView("reader");
+        }
+        showToast({ title: "Books added", message: `${created.length} files imported.`, type: "success" });
+        return;
+      }
 
+      const item = bufferItems[0];
+      const title = (importTitle.value || item?.suggestedTitle || importBuffer.suggestedTitle || "Untitled").trim() || "Untitled";
       const book = await createBookFromText({
         title,
         author,
         tags,
-        text: importBuffer.text,
-        sourceType: importBuffer.sourceType || "paste"
+        text: item?.text || importBuffer.text,
+        sourceType: item?.sourceType || importBuffer.sourceType || "paste",
+        contentExtras: item?.contentExtras
       });
 
       upsertBook(book);
@@ -1008,12 +1146,18 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       state.settings.defaultWpm = v;
       wpmValue.textContent = String(v);
       saveState();
+      if (selectedBookId) {
+        updateBookReaderState(selectedBookId, { wpm: v });
+      }
     });
 
     pauseSlider?.addEventListener("input", () => {
       const v = Number(pauseSlider.value);
       state.settings.punctuationPause = v;
       saveState();
+      if (selectedBookId) {
+        updateBookReaderState(selectedBookId, { pause: v });
+      }
     });
 
     progressSlider?.addEventListener("pointerdown", () => {
@@ -1256,6 +1400,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     window.addEventListener("resize", () => {
       scheduleRsvpFit();
       setReaderMode(state.settings.readerMode || (isNarrowReaderLayout() ? "page" : "rsvp"), { persist: false });
+      if (pdfState.doc && pdfState.currentBookId === selectedBookId) {
+        void renderPdfPage(pdfState.page || 1);
+      }
     });
 
     // Footer optional hooks
@@ -1612,22 +1759,37 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const loadingTask = pdfjsLib.getDocument({ data: buffer });
     const pdf = await loadingTask.promise;
     const totalPages = pdf.numPages || 0;
-    const textParts = [];
+    const pages = [];
 
     for (let i = 1; i <= totalPages; i += 1) {
       onStatus?.(`Extracting PDF… page ${i} / ${totalPages}`);
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      const pageText = content.items.map(item => item.str || "").join(" ");
-      textParts.push(pageText);
+      const rawPageText = content.items.map(item => item.str || "").join(" ");
+      const normalizedPageText = normalizeText(rawPageText);
+      const pageTokens = tokenize(normalizedPageText);
+      const wordCount = countWords(pageTokens);
+      pages.push({ text: normalizedPageText, wordCount });
       await sleep(0);
     }
 
-    const combined = textParts.join("\n\n");
+    const combined = pages.map(p => p.text).join("\n\n");
     if (totalPages > 1 && combined.trim().length < 300) {
       onStatus?.("Scanned PDF detected.");
     }
-    return { text: combined, totalPages };
+    let cursor = 0;
+    const pageRanges = pages.map((page, idx) => {
+      const start = cursor;
+      const end = page.wordCount ? cursor + page.wordCount - 1 : cursor;
+      cursor += page.wordCount;
+      return {
+        page: idx + 1,
+        start,
+        end,
+        wordCount: page.wordCount
+      };
+    });
+    return { text: combined, totalPages, pageRanges, fileData: buffer };
   }
 
   async function extractTextFromEpub(file, onStatus) {
@@ -1656,81 +1818,120 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     return {
       title: metadata?.title || "",
-      text: chunks.join("\n\n")
+      text: chunks.join("\n\n"),
+      fileData: buffer
     };
   }
+  async function parseImportFile(file, index, total) {
+    const name = file.name || "Untitled";
+    const lower = name.toLowerCase();
+    setImportStatus(total > 1 ? `Reading ${index + 1} / ${total}…` : "Reading file…");
+
+    if (lower.endsWith(".txt") || lower.endsWith(".md")) {
+      const baseTitle = name.replace(/\.(txt|md)$/i, "");
+      const text = await fileToTextAsync(file);
+      return {
+        file,
+        text: normalizeText(text),
+        sourceType: lower.endsWith(".md") ? "md" : "txt",
+        suggestedTitle: baseTitle,
+        contentExtras: {
+          fileType: file.type || "text/plain"
+        }
+      };
+    }
+
+    if (lower.endsWith(".pdf")) {
+      const baseTitle = name.replace(/\.pdf$/i, "");
+      const result = await extractTextFromPdf(file, status => setImportStatus(status));
+      const text = result?.text || "";
+      const totalPages = result?.totalPages || 1;
+      if (totalPages > 1 && text.trim().length < 300) {
+        setImportStatus("Scanned PDF detected.");
+        showToast({ title: "Scanned PDF detected", message: "OCR is not supported yet.", type: "error" });
+        return null;
+      }
+      if (!text || text.length < 40) {
+        setImportStatus("No text found in PDF.");
+        showToast({ title: "No text found", message: "This PDF may be scanned or image-based.", type: "error" });
+        return null;
+      }
+      return {
+        file,
+        text: normalizeText(text),
+        sourceType: "pdf",
+        suggestedTitle: baseTitle,
+        contentExtras: {
+          fileData: result?.fileData || null,
+          fileType: file.type || "application/pdf",
+          pageRanges: result?.pageRanges || [],
+          pdfTotalPages: totalPages
+        }
+      };
+    }
+
+    if (lower.endsWith(".epub")) {
+      const baseTitle = name.replace(/\.epub$/i, "");
+      const { text, title, fileData } = await extractTextFromEpub(file, status => setImportStatus(status));
+      if (!text || text.length < 40) {
+        setImportStatus("No readable text found in EPUB.");
+        showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
+        return null;
+      }
+      return {
+        file,
+        text: normalizeText(text),
+        sourceType: "epub",
+        suggestedTitle: title || baseTitle,
+        contentExtras: {
+          fileData,
+          fileType: file.type || "application/epub+zip"
+        }
+      };
+    }
+
+    showToast({ title: "Unsupported file", message: "Choose TXT, MD, EPUB, or PDF.", type: "error" });
+    return null;
+  }
+
   async function handleFilesSelected(files) {
     if (!files || files.length === 0) return;
-    const f = files[0];
-    const name = f.name || "Untitled";
-    const lower = name.toLowerCase();
-    setImportStatus("Reading file…");
-
+    const items = [];
     try {
-      if (lower.endsWith(".txt") || lower.endsWith(".md")) {
-        const baseTitle = name.replace(/\.(txt|md)$/i, "");
-        const text = await fileToTextAsync(f);
-        importBuffer = {
-          files: [f],
-          text: normalizeText(text),
-          sourceType: lower.endsWith(".md") ? "md" : "txt",
-          suggestedTitle: baseTitle
-        };
-        if (!importTitle.value.trim()) importTitle.value = baseTitle;
-        setImportStatus(`Loaded ${name}`);
+      for (let i = 0; i < files.length; i += 1) {
+        const item = await parseImportFile(files[i], i, files.length);
+        if (item) items.push(item);
+      }
+
+      if (!items.length) {
+        setImportStatus("No readable files selected.");
         return;
       }
 
-      if (lower.endsWith(".pdf")) {
-        const baseTitle = name.replace(/\.pdf$/i, "");
-        const result = await extractTextFromPdf(f, status => setImportStatus(status));
-        const text = result?.text || "";
-        const totalPages = result?.totalPages || 1;
-        if (totalPages > 1 && text.trim().length < 300) {
-          setImportStatus("Scanned PDF detected.");
-          showToast({ title: "Scanned PDF detected", message: "OCR is not supported yet.", type: "error" });
-          return;
-        }
-        if (!text || text.length < 40) {
-          setImportStatus("No text found in PDF.");
-          showToast({ title: "No text found", message: "This PDF may be scanned or image-based.", type: "error" });
-          return;
-        }
-        importBuffer = {
-          files: [f],
-          text: normalizeText(text),
-          sourceType: "pdf",
-          suggestedTitle: baseTitle
-        };
-        if (!importTitle.value.trim()) importTitle.value = baseTitle;
-        setImportStatus(`Loaded ${name}`);
-        return;
-      }
+      const primary = items[0];
+      importBuffer = {
+        files: items.map(item => item.file),
+        items,
+        text: primary.text || "",
+        sourceType: primary.sourceType || null,
+        suggestedTitle: primary.suggestedTitle || ""
+      };
 
-      if (lower.endsWith(".epub")) {
-        const baseTitle = name.replace(/\.epub$/i, "");
-        const { text, title } = await extractTextFromEpub(f, status => setImportStatus(status));
-        if (!text || text.length < 40) {
-          setImportStatus("No readable text found in EPUB.");
-          showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
-          return;
-        }
-        importBuffer = {
-          files: [f],
-          text: normalizeText(text),
-          sourceType: "epub",
-          suggestedTitle: title || baseTitle
-        };
-        if (!importTitle.value.trim()) importTitle.value = title || baseTitle;
-        setImportStatus(`Loaded ${name}`);
-        return;
+      if (items.length === 1) {
+        if (!importTitle.value.trim()) importTitle.value = primary.suggestedTitle || "";
+        setImportStatus(`Loaded ${primary.file.name}`);
+      } else {
+        importTitle.value = "";
+        setImportStatus(`Loaded ${items.length} files. Click Add to Library to import all.`);
       }
-
-      showToast({ title: "Unsupported file", message: "Choose TXT, MD, EPUB, or PDF.", type: "error" });
     } catch (err) {
       console.error(err);
       setImportStatus("Import failed.");
-      showToast({ title: "Import failed", message: "Please try another file.", type: "error" });
+      showToast({
+        title: "Import failed",
+        message: err instanceof Error ? err.message : "Please try another file.",
+        type: "error"
+      });
     }
   }
 
@@ -1738,11 +1939,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     importTitle.value = "";
     importAuthor.value = "";
     importTags.value = "";
-    importBuffer = { files: [], text: "", sourceType: null, suggestedTitle: "" };
+    importBuffer = { files: [], items: [], text: "", sourceType: null, suggestedTitle: "" };
     setImportStatus("");
   }
 
-  async function createBookFromText({ title, author, tags, text, sourceType }) {
+  async function createBookFromText({ title, author, tags, text, sourceType, contentExtras }) {
     const normalizedText = normalizeText(text);
     const tokens = tokenize(normalizedText);
     const wc = countWords(tokens);
@@ -1762,7 +1963,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       progress: { index: 0, updatedAt: nowISO(), bookmarks: [] },
       stats: { openedAt: null, lastSessionAt: null, totalReadWords: 0 }
     };
-    await persistBookContentToIdb(book.id, normalizedText, tokens);
+    await persistBookContentToIdb(book.id, normalizedText, tokens, contentExtras || {});
     return book;
   }
 
@@ -1794,7 +1995,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         rawText: text,
         tokens,
         tokenCount: tokens.length,
-        updatedAt: nowISO()
+        updatedAt: nowISO(),
+        pageRanges: [],
+        fileData: null,
+        fileType: null,
+        pdfTotalPages: null
       };
       contentCache.set(bookId, content);
       await persistBookContentToIdb(bookId, text, tokens);
@@ -2077,6 +2282,274 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return paragraphs;
   }
 
+  function getPageRangesForBook(bookId) {
+    const content = contentCache.get(bookId);
+    if (!content || !Array.isArray(content.pageRanges)) return [];
+    return content.pageRanges;
+  }
+
+  function getPdfPageForWordIndex(bookId, wordIndex) {
+    const ranges = getPageRangesForBook(bookId);
+    if (!ranges.length) return 1;
+    let lo = 0;
+    let hi = ranges.length - 1;
+    let result = ranges[0].page;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const range = ranges[mid];
+      if (wordIndex < range.start) {
+        hi = mid - 1;
+      } else if (wordIndex > range.end) {
+        lo = mid + 1;
+      } else {
+        return range.page;
+      }
+      result = range.page;
+    }
+    return result;
+  }
+
+  function getWordStartForPdfPage(bookId, page) {
+    const ranges = getPageRangesForBook(bookId);
+    const match = ranges.find(r => r.page === page);
+    return match ? match.start : 0;
+  }
+
+  function setViewerStatus(message) {
+    if (viewerStatus) viewerStatus.textContent = message || "";
+  }
+
+  function showViewerType(type) {
+    if (documentViewer) documentViewer.hidden = type === "text";
+    if (pdfViewer) pdfViewer.hidden = type !== "pdf";
+    if (epubViewer) epubViewer.hidden = type !== "epub";
+    if (pageView) pageView.hidden = type !== "text";
+    if (viewerControls) viewerControls.hidden = type !== "pdf";
+    if (type === "empty") {
+      if (documentViewer) documentViewer.hidden = false;
+      if (pageView) pageView.hidden = true;
+      if (pdfViewer) pdfViewer.hidden = true;
+      if (epubViewer) epubViewer.hidden = true;
+      if (viewerControls) viewerControls.hidden = true;
+    }
+  }
+
+  function resetPdfViewer() {
+    pdfState.doc = null;
+    pdfState.page = 1;
+    pdfState.total = 1;
+    pdfState.scale = 1;
+    pdfState.rendering = false;
+    pdfState.queuedPage = null;
+    pdfState.currentBookId = null;
+    if (pdfCanvas) {
+      const ctx = pdfCanvas.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+    }
+  }
+
+  function resetEpubViewer() {
+    if (epubState.rendition?.destroy) {
+      epubState.rendition.destroy();
+    }
+    if (epubState.book?.destroy) {
+      epubState.book.destroy();
+    }
+    epubState.book = null;
+    epubState.rendition = null;
+    epubState.currentBookId = null;
+    if (epubViewer) epubViewer.innerHTML = "";
+  }
+
+  function updatePdfControls() {
+    if (!pdfPageInput || !pdfPageTotal) return;
+    pdfPageInput.value = String(pdfState.page || 1);
+    pdfPageInput.max = String(pdfState.total || 1);
+    pdfPageTotal.textContent = String(pdfState.total || 1);
+    if (pdfPrevBtn) pdfPrevBtn.disabled = pdfState.page <= 1;
+    if (pdfNextBtn) pdfNextBtn.disabled = pdfState.page >= pdfState.total;
+    if (pdfZoomLabel) pdfZoomLabel.textContent = `${Math.round((pdfState.scale || 1) * 100)}%`;
+  }
+
+  async function renderPdfPage(pageNumber) {
+    if (!pdfState.doc || !pdfCanvas) return;
+    const target = clamp(pageNumber, 1, pdfState.total || 1);
+    if (pdfState.rendering) {
+      pdfState.queuedPage = target;
+      return;
+    }
+    pdfState.rendering = true;
+    setViewerStatus(`Rendering page ${target}…`);
+    const page = await pdfState.doc.getPage(target);
+    const unscaled = page.getViewport({ scale: 1 });
+    const containerWidth = pdfViewer?.clientWidth || unscaled.width;
+    const fitScale = containerWidth ? (containerWidth - 8) / unscaled.width : 1;
+    const viewport = page.getViewport({ scale: fitScale * (pdfState.scale || 1) });
+    const ctx = pdfCanvas.getContext("2d");
+    pdfCanvas.width = viewport.width;
+    pdfCanvas.height = viewport.height;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    pdfState.page = target;
+    pdfState.rendering = false;
+    updatePdfControls();
+    setViewerStatus(`Page ${pdfState.page} / ${pdfState.total}`);
+
+    if (pdfState.queuedPage && pdfState.queuedPage !== target) {
+      const next = pdfState.queuedPage;
+      pdfState.queuedPage = null;
+      void renderPdfPage(next);
+    }
+  }
+
+  async function loadPdfForBook(book) {
+    if (!book || !pdfCanvas) return;
+    const content = contentCache.get(book.id);
+    if (!content?.fileData) {
+      setViewerStatus("No PDF data stored for this book.");
+      return;
+    }
+    if (pdfState.currentBookId === book.id && pdfState.doc) {
+      updatePdfControls();
+      return;
+    }
+    resetPdfViewer();
+    try {
+      const pdfjsLib = window["pdfjs-dist/build/pdf"];
+      if (!pdfjsLib) {
+        setViewerStatus("PDF viewer unavailable.");
+        return;
+      }
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      setViewerStatus("Loading PDF…");
+      const loadingTask = pdfjsLib.getDocument({ data: content.fileData });
+      pdfState.doc = await loadingTask.promise;
+      pdfState.total = pdfState.doc.numPages || 1;
+      pdfState.currentBookId = book.id;
+      pdfState.scale = 1;
+      const desiredPage = clamp(book.readerState?.currentPdfPage ?? 1, 1, pdfState.total);
+      await renderPdfPage(desiredPage);
+    } catch (err) {
+      console.error("PDF load failed", err);
+      setViewerStatus("Failed to load PDF.");
+      showToast({ title: "PDF load failed", message: "Try re-importing the file.", type: "error" });
+    }
+  }
+
+  async function loadEpubForBook(book) {
+    if (!book) return;
+    const content = contentCache.get(book.id);
+    if (!content?.fileData || !epubViewer) {
+      setViewerStatus("No EPUB data stored for this book.");
+      return;
+    }
+    if (epubState.currentBookId === book.id && epubState.rendition) {
+      return;
+    }
+    resetEpubViewer();
+    try {
+      const epubLib = window.ePub;
+      if (!epubLib) {
+        setViewerStatus("EPUB viewer unavailable.");
+        return;
+      }
+      setViewerStatus("Loading EPUB…");
+      epubState.book = epubLib(content.fileData);
+      await epubState.book.ready;
+      epubState.rendition = epubState.book.renderTo(epubViewer, { width: "100%", height: "60vh" });
+      await epubState.rendition.display();
+      epubState.currentBookId = book.id;
+      setViewerStatus("EPUB loaded.");
+    } catch (err) {
+      console.error("EPUB load failed", err);
+      setViewerStatus("Failed to load EPUB.");
+      showToast({ title: "EPUB load failed", message: "Try re-importing the file.", type: "error" });
+    }
+  }
+
+  function setPdfPage(page, { userInitiated = false, fromRsvpSync = false } = {}) {
+    const book = selectedBookId ? getBook(selectedBookId) : null;
+    if (!book || book.sourceType !== "pdf") return;
+    if (!pdfState.doc) return;
+    const clampedPage = clamp(page, 1, pdfState.total || 1);
+    void renderPdfPage(clampedPage);
+    if (book.readerState?.currentPdfPage !== clampedPage) {
+      updateBookReaderState(book.id, { currentPdfPage: clampedPage });
+    }
+    if (userInitiated && syncRsvpToggle?.checked && !fromRsvpSync) {
+      syncRsvpToPdfPage(clampedPage, { userInitiated: true });
+    }
+  }
+
+  function jumpPdfPage(delta) {
+    setPdfPage((pdfState.page || 1) + delta, { userInitiated: true });
+  }
+
+  function adjustPdfZoom(delta) {
+    pdfState.scale = clamp((pdfState.scale || 1) + delta, 0.6, 2.5);
+    void renderPdfPage(pdfState.page || 1);
+    updatePdfControls();
+  }
+
+  function schedulePdfSync(page) {
+    if (!page || !pdfState.doc) return;
+    if (!selectedBookId || pdfState.currentBookId !== selectedBookId) return;
+    if (pdfState.page === page) return;
+    pdfSyncTarget = page;
+    if (pdfSyncTimer) return;
+    pdfSyncTimer = setTimeout(() => {
+      pdfSyncTimer = null;
+      const next = pdfSyncTarget;
+      pdfSyncTarget = null;
+      if (typeof next !== "number") return;
+      setPdfPage(next, { userInitiated: false, fromRsvpSync: true });
+    }, 140);
+  }
+
+  function syncRsvpToPdfPage(page, { userInitiated = false } = {}) {
+    if (!selectedBookId) return;
+    const book = getBook(selectedBookId);
+    if (!book) return;
+    const wordStart = getWordStartForPdfPage(book.id, page);
+    const tokenIndex = getTokenIndexForWordIndex(book.id, wordStart);
+    if (reader.isPlaying) stopReader(false);
+    setTokenIndex(tokenIndex, { fromPlayback: false, syncPageView: !userInitiated });
+  }
+
+  async function renderDocumentViewer(book) {
+    if (!documentViewer || !pageView) return;
+    if (!book) {
+      showViewerType("empty");
+      setViewerStatus("Select a book to view pages.");
+      if (pageView) pageView.innerHTML = "<p class=\"subtle\">Select a book to start reading.</p>";
+      return;
+    }
+
+    if (book.sourceType === "pdf") {
+      resetEpubViewer();
+      showViewerType("pdf");
+      setViewerStatus("Preparing PDF…");
+      pageViewBookId = null;
+      await loadPdfForBook(book);
+      return;
+    }
+
+    if (book.sourceType === "epub") {
+      resetPdfViewer();
+      showViewerType("epub");
+      pageViewBookId = null;
+      await loadEpubForBook(book);
+      return;
+    }
+
+    resetPdfViewer();
+    resetEpubViewer();
+    showViewerType("text");
+    if (pageViewBookId !== book.id || !pageMapCache.has(book.id)) {
+      renderPageView(book);
+      pageViewBookId = book.id;
+    }
+  }
+
   function renderPageView(book) {
     if (!pageView || !pageProgress) return;
     if (!book) {
@@ -2140,7 +2613,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
   function restoreLastBookIfNeeded() {
     if (!state.settings.rememberLastBook) return;
-    const lastId = state.library.lastOpenedBookId;
+    const lastId = state.reader?.currentBookId || state.library.lastOpenedBookId;
     if (!lastId) return;
     const b = getBook(lastId);
     if (!b) return;
@@ -2157,6 +2630,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     stopReader(true);
 
     selectedBookId = book.id;
+    state.reader.currentBookId = book.id;
     if (state.settings.rememberLastBook) state.library.lastOpenedBookId = book.id;
 
     // Update book stats
@@ -2172,9 +2646,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     upsertBook(updated);
 
     // Sync reader sliders with settings
-    if (wpmSlider) wpmSlider.value = String(state.settings.defaultWpm || 300);
-    if (pauseSlider) pauseSlider.value = String(state.settings.punctuationPause ?? 80);
-    if (wpmValue) wpmValue.textContent = String(state.settings.defaultWpm || 300);
+    const bookWpm = book.readerState?.wpm ?? state.settings.defaultWpm || 300;
+    const bookPause = book.readerState?.pause ?? state.settings.punctuationPause ?? 80;
+    if (wpmSlider) wpmSlider.value = String(bookWpm);
+    if (pauseSlider) pauseSlider.value = String(bookPause);
+    if (wpmValue) wpmValue.textContent = String(bookWpm);
+    if (syncRsvpToggle) syncRsvpToggle.checked = !!book.readerState?.syncRsvpToPage;
 
     // Ensure content ready
     renderReaderLoading();
@@ -2196,12 +2673,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       setRSVPDisplay("Ready", "•", "Set");
       if (readerProgressEl) readerProgressEl.textContent = "0%";
       if (rsvpSubline) {
-        rsvpSubline.textContent = "Tap Play (mobile) or press Space (desktop) to start";
+        rsvpSubline.textContent = "Select a book, then tap Play to start.";
         rsvpSubline.hidden = false;
       }
       if (btnPlay) btnPlay.disabled = true;
       pageViewBookId = null;
-      renderPageView(null);
+      void renderDocumentViewer(null);
       updateProgressUI(null);
       renderReaderBookmarks();
       return;
@@ -2210,6 +2687,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (btnPlay) btnPlay.disabled = false;
     if (readerBookTitle) readerBookTitle.textContent = book.title || "Untitled";
     if (readerBookSub) readerBookSub.textContent = `${book.author || "—"} • ${book.wordCount || 0} words`;
+    if (syncRsvpToggle) syncRsvpToggle.checked = !!book.readerState?.syncRsvpToPage;
 
     const tokens = getCachedTokens(book.id);
     if (!tokens.length) {
@@ -2222,6 +2700,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
           rsvpSubline.hidden = false;
         }
         if (btnPlay) btnPlay.disabled = true;
+        void renderDocumentViewer(book);
         return;
       }
       renderReaderLoading();
@@ -2234,10 +2713,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     renderTokenAtIndex(book, idx);
     updateProgressUI(book);
     renderReaderBookmarks();
-
-    if (pageViewBookId !== book.id || !pageMapCache.has(book.id)) {
-      renderPageView(book);
-      pageViewBookId = book.id;
+    void renderDocumentViewer(book);
+    if (!reader.isPlaying && rsvpSubline) {
+      if (idx >= tokens.length - 1) {
+        rsvpSubline.textContent = "End of book";
+      } else {
+        rsvpSubline.textContent = book.sourceType === "pdf"
+          ? "Press Play to start. Tip: tap the PDF to jump."
+          : "Press Play to start from your last position.";
+      }
+      rsvpSubline.hidden = false;
     }
   }
 
@@ -2254,6 +2739,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       pageView.innerHTML = "<p class=\"subtle\">Loading text…</p>";
     }
     if (pageProgress) pageProgress.textContent = "0% • word 0 / 0";
+    setViewerStatus("Preparing document…");
   }
 
   function updateProgressUI(book) {
@@ -2430,12 +2916,25 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     const total = Math.max(0, getTokenCountForBook(book));
     const clamped = clamp(idx, 0, Math.max(0, total - 1));
+    const wordIndex = getWordIndexForTokenIndex(book.id, clamped);
+    const wpmSetting = Number(wpmSlider?.value || book.readerState?.wpm || state.settings.defaultWpm || 300);
+    const pauseSetting = Number(pauseSlider?.value || book.readerState?.pause || state.settings.punctuationPause || 80);
+    const nextPdfPage = book.sourceType === "pdf"
+      ? getPdfPageForWordIndex(book.id, wordIndex)
+      : (book.readerState?.currentPdfPage || 1);
     const updated = {
       ...book,
       progress: {
         ...book.progress,
         index: clamped,
         updatedAt: nowISO()
+      },
+      readerState: {
+        ...book.readerState,
+        currentWordIndex: wordIndex,
+        currentPdfPage: nextPdfPage,
+        wpm: wpmSetting,
+        pause: pauseSetting
       },
       stats: {
         ...book.stats,
@@ -2457,6 +2956,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (syncPageView && !reader.isPlaying) {
       scrollPageViewToTokenIndex(book, clamped, "auto");
+    }
+    if (book.sourceType === "pdf" && getPageRangesForBook(book.id).length) {
+      schedulePdfSync(nextPdfPage);
     }
   }
 
@@ -3019,13 +3521,19 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         }));
     }
 
+    const safeContents = contents.map(content => ({
+      ...content,
+      fileData: null
+    }));
+
     const payload = {
       exportedAt: nowISO(),
       app: "SwiftReader",
       version: 2,
       settings: state.settings,
+      reader: state.reader,
       books,
-      contents,
+      contents: safeContents,
       notes
     };
 
@@ -3059,6 +3567,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const incomingNotes = Array.isArray(imported.notes) ? imported.notes : [];
       const incomingContents = Array.isArray(imported.contents) ? imported.contents : [];
       const incomingSettings = imported.settings || imported.state?.settings;
+      const incomingReader = imported.reader || imported.state?.reader;
 
       if (!incomingBooks.length && !incomingNotes.length && !incomingContents.length) {
         showToast({ title: "No data found", message: "Import file does not contain library data.", type: "error" });
@@ -3079,6 +3588,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
       if (incomingSettings) {
         state.settings = { ...state.settings, ...incomingSettings };
+      }
+      if (incomingReader) {
+        state.reader = { ...state.reader, ...incomingReader };
       }
 
       if (incomingBooks.length) {
@@ -3113,7 +3625,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
             rawText: content.rawText || "",
             tokens: Array.isArray(content.tokens) ? content.tokens : [],
             tokenCount: typeof content.tokenCount === "number" ? content.tokenCount : (content.tokens || []).length,
-            updatedAt: content.updatedAt || nowISO()
+            updatedAt: content.updatedAt || nowISO(),
+            pageRanges: Array.isArray(content.pageRanges) ? content.pageRanges : [],
+            fileData: content.fileData || null,
+            fileType: content.fileType || null,
+            pdfTotalPages: typeof content.pdfTotalPages === "number" ? content.pdfTotalPages : null
           };
           await idbPut(DB_STORES.contents, entry);
           contentCache.set(content.bookId, entry);
