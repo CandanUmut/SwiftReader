@@ -1406,6 +1406,24 @@ kbd {
   justify-content: center;
 }
 
+/* ---------- Fatal Banner ---------- */
+.fatal-banner {
+  position: sticky;
+  top: 0;
+  z-index: 70;
+  width: 100%;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--danger) 20%, var(--card));
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fatal-banner-text {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
 /* ---------- Toast / Status (optional hooks for JS later) ---------- */
 .toast {
   position: relative;

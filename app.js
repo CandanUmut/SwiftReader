@@ -18,9 +18,25 @@
   console.info(`SwiftReader loaded v${APP_VERSION}`);
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const safeQuery = (sel, root = document) => {
+    const el = root.querySelector(sel);
+    if (!el) {
+      console.warn(`SwiftReader: missing element ${sel}`);
+    }
+    return el;
+  };
   const nowISO = () => new Date().toISOString();
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const FOCUSABLE_SELECTOR = "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
+
+  function bind(el, event, handler, name = event) {
+    if (!el) {
+      console.warn(`SwiftReader bind: missing ${name}`);
+      return false;
+    }
+    el.addEventListener(event, handler);
+    return true;
+  }
 
   function safeJsonParse(s, fallback) {
     try { return JSON.parse(s); } catch { return fallback; }
@@ -733,6 +749,8 @@
   let pendingScrubValue = null;
   let pdfSyncTimer = null;
   let pdfSyncTarget = null;
+  let fatalBanner = null;
+  let bootBindings = { attempted: 0, bound: 0 };
 
   const pdfState = {
     doc: null,
@@ -780,9 +798,11 @@
   --------------------------- */
   void (async () => {
     try {
+      initGlobalErrorHandlers();
       await initApp();
     } catch (err) {
       console.error("SwiftReader boot error", err);
+      showFatalBanner("App failed to start. Open console for details.");
       showToast({
         title: "SwiftReader failed to start",
         message: err instanceof Error ? err.message : "Unexpected error during startup.",
@@ -803,7 +823,8 @@
     initReaderMode();
     runSmokeChecks();
     initDebugHelpers();
-    wireEvents();
+    bootBindings = wireEvents();
+    logBootStatus();
     renderAll();
     restoreLastBookIfNeeded();
     registerServiceWorker();
@@ -813,43 +834,49 @@
      Event Wiring
   --------------------------- */
   function wireEvents() {
+    const bindings = { attempted: 0, bound: 0 };
+    const on = (el, event, handler, name) => {
+      bindings.attempted += 1;
+      if (bind(el, event, handler, name)) bindings.bound += 1;
+    };
+
     // Theme toggle cycles: system -> dark -> light -> system
-    themeToggleBtn?.addEventListener("click", () => {
+    on(themeToggleBtn, "click", () => {
       const cur = state.settings.theme || "system";
       const next = cur === "system" ? "dark" : cur === "dark" ? "light" : "system";
       state.settings.theme = next;
       saveState();
       applyThemeFromSettings();
-    });
+    }, "#theme-toggle");
 
     // Help modal
-    helpBtn?.addEventListener("click", () => openModal(modalHelp, helpBtn));
-    modalHelp?.addEventListener("click", (e) => {
+    on(helpBtn, "click", () => openModal(modalHelp, helpBtn), "#help-btn");
+    on(modalHelp, "click", (e) => {
       const t = e.target;
       if (t && t.dataset && t.dataset.close === "true") closeModal(modalHelp);
-    });
+    }, "#modal-help");
 
-    modalConfirm?.addEventListener("click", (e) => {
+    on(modalConfirm, "click", (e) => {
       const t = e.target;
       if (t && t.dataset && t.dataset.close === "true") resolveConfirm(false);
-    });
+    }, "#modal-confirm");
 
-    confirmOkBtn?.addEventListener("click", () => resolveConfirm(true));
-    confirmCancelBtn?.addEventListener("click", () => resolveConfirm(false));
+    on(confirmOkBtn, "click", () => resolveConfirm(true), "#confirm-ok-btn");
+    on(confirmCancelBtn, "click", () => resolveConfirm(false), "#confirm-cancel-btn");
 
     // Nav
     navButtons.forEach(btn => {
-      btn.addEventListener("click", () => {
+      on(btn, "click", () => {
         const view = btn.dataset.view;
         if (!view) return;
         setView(view);
-      });
+      }, `nav:${btn.id || btn.dataset.view || "item"}`);
     });
 
-    togglePageBtn?.addEventListener("click", () => setReaderMode("page"));
-    toggleRsvpBtn?.addEventListener("click", () => setReaderMode("rsvp"));
+    on(togglePageBtn, "click", () => setReaderMode("page"), "#toggle-page");
+    on(toggleRsvpBtn, "click", () => setReaderMode("rsvp"), "#toggle-rsvp");
 
-    pageView?.addEventListener("click", (event) => {
+    on(pageView, "click", (event) => {
       if (!selectedBookId) return;
       const book = getBook(selectedBookId);
       if (!book) return;
@@ -885,9 +912,9 @@
       if (reader.isPlaying) stopReader(false);
       setTokenIndex(nearest.tokenIndex, { fromPlayback: false, syncPageView: false });
       if (isNarrowReaderLayout()) setReaderMode("rsvp");
-    });
+    }, "#page-view");
 
-    pdfCanvas?.addEventListener("click", () => {
+    on(pdfCanvas, "click", () => {
       if (!selectedBookId) return;
       const book = getBook(selectedBookId);
       if (!book || book.sourceType !== "pdf") return;
@@ -901,18 +928,18 @@
       const tokenIndex = getTokenIndexForWordIndex(book.id, range.start);
       setTokenIndex(tokenIndex, { fromPlayback: false, syncPageView: false });
       if (isNarrowReaderLayout()) setReaderMode("rsvp");
-    });
+    }, "#pdf-canvas");
 
-    pdfPrevBtn?.addEventListener("click", () => jumpPdfPage(-1));
-    pdfNextBtn?.addEventListener("click", () => jumpPdfPage(1));
-    pdfZoomInBtn?.addEventListener("click", () => adjustPdfZoom(0.1));
-    pdfZoomOutBtn?.addEventListener("click", () => adjustPdfZoom(-0.1));
-    pdfPageInput?.addEventListener("change", () => {
+    on(pdfPrevBtn, "click", () => jumpPdfPage(-1), "#pdf-prev-btn");
+    on(pdfNextBtn, "click", () => jumpPdfPage(1), "#pdf-next-btn");
+    on(pdfZoomInBtn, "click", () => adjustPdfZoom(0.1), "#pdf-zoom-in");
+    on(pdfZoomOutBtn, "click", () => adjustPdfZoom(-0.1), "#pdf-zoom-out");
+    on(pdfPageInput, "change", () => {
       const value = Number(pdfPageInput.value);
       setPdfPage(value, { userInitiated: true });
-    });
+    }, "#pdf-page-input");
 
-    syncRsvpToggle?.addEventListener("change", () => {
+    on(syncRsvpToggle, "change", () => {
       const book = selectedBookId ? getBook(selectedBookId) : null;
       if (!book) return;
       const updated = {
@@ -927,55 +954,55 @@
         const wordIndex = getWordIndexForTokenIndex(book.id, getCurrentTokenIndex());
         syncRsvpToPdfPage(pdfState.page, { wordIndex, userInitiated: false });
       }
-    });
+    }, "#sync-rsvp-toggle");
 
-    openLibraryBtn?.addEventListener("click", () => setView("library"));
+    on(openLibraryBtn, "click", () => setView("library"), "#open-library-btn");
 
     // Import tabs
-    tabFile?.addEventListener("click", () => setImportTab("file"));
-    tabPaste?.addEventListener("click", () => setImportTab("paste"));
+    on(tabFile, "click", () => setImportTab("file"), "#tab-file");
+    on(tabPaste, "click", () => setImportTab("paste"), "#tab-paste");
 
     // File drop zone
-    fileDrop?.addEventListener("click", (e) => {
+    on(fileDrop, "click", (e) => {
       const target = e.target;
       if (target?.closest?.("label[for='file-input']")) return;
       fileInput?.click();
-    });
-    fileDrop?.addEventListener("keydown", (e) => {
+    }, "#file-drop");
+    on(fileDrop, "keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") fileInput?.click();
-    });
+    }, "#file-drop");
 
     // Drag & drop
     ["dragenter", "dragover"].forEach(type => {
-      fileDrop?.addEventListener(type, (e) => {
+      on(fileDrop, type, (e) => {
         e.preventDefault();
         e.stopPropagation();
         if (fileDrop) fileDrop.style.borderColor = "color-mix(in srgb, var(--primary) 40%, var(--border))";
-      });
+      }, "#file-drop");
     });
     ["dragleave", "drop"].forEach(type => {
-      fileDrop?.addEventListener(type, (e) => {
+      on(fileDrop, type, (e) => {
         e.preventDefault();
         e.stopPropagation();
         if (fileDrop) fileDrop.style.borderColor = "";
-      });
+      }, "#file-drop");
     });
-    fileDrop?.addEventListener("drop", async (e) => {
+    on(fileDrop, "drop", async (e) => {
       const files = Array.from(e.dataTransfer?.files || []);
       if (files.length === 0) return;
       showToast({ title: "Reading files", message: "Starting import…", type: "info" });
       await handleFilesSelected(files);
-    });
+    }, "#file-drop");
 
-    fileInput?.addEventListener("change", async () => {
+    on(fileInput, "change", async () => {
       const files = Array.from(fileInput.files || []);
       if (files.length === 0) return;
       showToast({ title: "Reading files", message: "Starting import…", type: "info" });
       await handleFilesSelected(files);
       fileInput.value = "";
-    });
+    }, "#file-input");
 
-    demoLoadBtn?.addEventListener("click", () => {
+    on(demoLoadBtn, "click", () => {
       const demo = `
 SwiftReader Demo — RSVP speed reading
 
@@ -1002,9 +1029,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       importTags.value = "demo, rsvp";
       setImportStatus("Demo text loaded.");
       showToast({ title: "Demo loaded", message: "Ready to add to your library.", type: "success" });
-    });
+    }, "#demo-load-btn");
 
-    importConfirmBtn?.addEventListener("click", async () => {
+    on(importConfirmBtn, "click", async () => {
       const author = (importAuthor.value || "").trim();
       const tags = (importTags.value || "")
         .split(",")
@@ -1061,12 +1088,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       await openBookInReader(book.id);
       setView("reader");
       showToast({ title: "Book added", message: "Ready to read.", type: "success" });
-    });
+    }, "#import-confirm-btn");
 
-    importClearBtn?.addEventListener("click", () => clearFileImportUI());
+    on(importClearBtn, "click", () => clearFileImportUI(), "#import-clear-btn");
 
     // Paste import
-    pasteAddBtn?.addEventListener("click", async () => {
+    on(pasteAddBtn, "click", async () => {
       const text = normalizeText(pasteText.value || "");
       const title = (pasteTitle.value || "Pasted Text").trim() || "Pasted Text";
       if (!text) {
@@ -1088,26 +1115,26 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       await openBookInReader(book.id);
       setView("reader");
       showToast({ title: "Book added", message: "Ready to read.", type: "success" });
-    });
+    }, "#paste-add-btn");
 
-    pasteClearBtn?.addEventListener("click", () => {
+    on(pasteClearBtn, "click", () => {
       pasteText.value = "";
       pasteTitle.value = "";
       setPasteStatus("");
-    });
+    }, "#paste-clear-btn");
 
-    emptyDemoBtn?.addEventListener("click", () => demoLoadBtn?.click());
-    emptyPasteBtn?.addEventListener("click", () => {
+    on(emptyDemoBtn, "click", () => demoLoadBtn?.click(), "#empty-demo-btn");
+    on(emptyPasteBtn, "click", () => {
       setImportTab("paste");
       pasteText?.focus();
-    });
-    emptyHelpBtn?.addEventListener("click", () => openModal(modalHelp, emptyHelpBtn));
+    }, "#empty-paste-btn");
+    on(emptyHelpBtn, "click", () => openModal(modalHelp, emptyHelpBtn), "#empty-help-btn");
 
     // Library interactions
-    librarySearch?.addEventListener("input", () => renderLibraryList());
-    librarySort?.addEventListener("change", () => renderLibraryList());
+    on(librarySearch, "input", () => renderLibraryList(), "#library-search");
+    on(librarySort, "change", () => renderLibraryList(), "#library-sort");
 
-    dangerResetBtn?.addEventListener("click", async () => {
+    on(dangerResetBtn, "click", async () => {
       const confirmed = await openConfirm({
         title: "Reset local data",
         message: "This will delete all local books and notes for SwiftReader. Continue?",
@@ -1126,22 +1153,22 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       renderAll();
       setView("library");
       showToast({ title: "Data reset", message: "All local data has been cleared.", type: "success" });
-    });
+    }, "#danger-reset-btn");
 
     // Sidebar export/import
-    exportBtn?.addEventListener("click", () => void exportData());
-    importDataBtn?.addEventListener("click", () => importData());
+    on(exportBtn, "click", () => void exportData(), "#export-btn");
+    on(importDataBtn, "click", () => importData(), "#import-data-btn");
 
     // Reader controls
-    btnPlay?.addEventListener("click", () => togglePlay());
-    btnBack?.addEventListener("click", () => stepWords(-3));
-    btnForward?.addEventListener("click", () => stepWords(+3));
-    btnBackSent?.addEventListener("click", () => stepSentence(-1));
-    btnForwardSent?.addEventListener("click", () => stepSentence(+1));
-    btnMark?.addEventListener("click", () => addBookmark());
-    btnAddNote?.addEventListener("click", () => openAddNoteFromReader());
+    on(btnPlay, "click", () => togglePlay(), "#btn-play");
+    on(btnBack, "click", () => stepWords(-3), "#btn-back");
+    on(btnForward, "click", () => stepWords(+3), "#btn-forward");
+    on(btnBackSent, "click", () => stepSentence(-1), "#btn-back-sent");
+    on(btnForwardSent, "click", () => stepSentence(+1), "#btn-forward-sent");
+    on(btnMark, "click", () => addBookmark(), "#btn-mark");
+    on(btnAddNote, "click", () => openAddNoteFromReader(), "#btn-add-note");
 
-    wpmSlider?.addEventListener("input", () => {
+    on(wpmSlider, "input", () => {
       const v = Number(wpmSlider.value);
       state.settings.defaultWpm = v;
       wpmValue.textContent = String(v);
@@ -1149,35 +1176,35 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       if (selectedBookId) {
         updateBookReaderState(selectedBookId, { wpm: v });
       }
-    });
+    }, "#wpm-slider");
 
-    pauseSlider?.addEventListener("input", () => {
+    on(pauseSlider, "input", () => {
       const v = Number(pauseSlider.value);
       state.settings.punctuationPause = v;
       saveState();
       if (selectedBookId) {
         updateBookReaderState(selectedBookId, { pause: v });
       }
-    });
+    }, "#pause-slider");
 
-    progressSlider?.addEventListener("pointerdown", () => {
+    on(progressSlider, "pointerdown", () => {
       scrubberActive = true;
       if (reader.isPlaying) stopReader(false);
-    });
+    }, "#progress-slider");
 
-    progressSlider?.addEventListener("input", () => {
+    on(progressSlider, "input", () => {
       const value = Number(progressSlider.value);
       scheduleScrub(value, false);
-    });
+    }, "#progress-slider");
 
-    progressSlider?.addEventListener("change", () => {
+    on(progressSlider, "change", () => {
       const value = Number(progressSlider.value);
       scrubberActive = false;
       scheduleScrub(value, true);
-    });
+    }, "#progress-slider");
 
     // Reader quick note box
-    saveNoteBtn?.addEventListener("click", () => {
+    on(saveNoteBtn, "click", () => {
       const text = (quickNote.value || "").trim();
       if (!selectedBookId) {
         showToast({ title: "No book selected", message: "Open a book before saving a note.", type: "error" });
@@ -1204,9 +1231,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       renderReaderNotes();
       renderNotesView();
       showToast({ title: "Note saved", message: "Linked to the current book.", type: "success" });
-    });
+    }, "#save-note-btn");
 
-    clearNoteBtn?.addEventListener("click", () => (quickNote.value = ""));
+    on(clearNoteBtn, "click", () => (quickNote.value = ""), "#clear-note-btn");
 
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
@@ -1239,7 +1266,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     // RSVP gestures (mobile-first)
     let gestureStart = null;
-    rsvpFrame?.addEventListener("pointerdown", (e) => {
+    on(rsvpFrame, "pointerdown", (e) => {
       const readerView = $("#view-reader");
       if (!readerView || !readerView.classList.contains("is-active")) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
@@ -1249,9 +1276,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         time: performance.now()
       };
       rsvpFrame.setPointerCapture?.(e.pointerId);
-    });
+    }, ".rsvp-frame");
 
-    rsvpFrame?.addEventListener("pointerup", (e) => {
+    on(rsvpFrame, "pointerup", (e) => {
       if (!state.settings.tapControls) return;
       const readerView = $("#view-reader");
       if (!readerView || !readerView.classList.contains("is-active")) return;
@@ -1282,18 +1309,18 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       else togglePlay();
 
       gestureStart = null;
-    });
+    }, ".rsvp-frame");
 
-    rsvpFrame?.addEventListener("pointercancel", () => {
+    on(rsvpFrame, "pointercancel", () => {
       gestureStart = null;
-    });
+    }, ".rsvp-frame");
 
     // Notes view
-    notesSearch?.addEventListener("input", () => renderNotesView());
-    notesFilterBook?.addEventListener("change", () => renderNotesView());
-    notesSort?.addEventListener("change", () => renderNotesView());
+    on(notesSearch, "input", () => renderNotesView(), "#notes-search");
+    on(notesFilterBook, "change", () => renderNotesView(), "#notes-filter-book");
+    on(notesSort, "change", () => renderNotesView(), "#notes-sort");
 
-    noteUpdateBtn?.addEventListener("click", () => {
+    on(noteUpdateBtn, "click", () => {
       if (!selectedNoteId) return;
       const note = state.notes.find(n => n.id === selectedNoteId);
       if (!note) return;
@@ -1307,9 +1334,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       // Keep selection
       selectNote(selectedNoteId);
       showToast({ title: "Note updated", message: "Your changes are saved.", type: "success" });
-    });
+    }, "#note-update-btn");
 
-    noteDeleteBtn?.addEventListener("click", async () => {
+    on(noteDeleteBtn, "click", async () => {
       if (!selectedNoteId) return;
       const note = state.notes.find(n => n.id === selectedNoteId);
       if (!note) return;
@@ -1327,47 +1354,47 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       renderNotesView();
       renderReaderNotes();
       showToast({ title: "Note deleted", message: "The note has been removed.", type: "success" });
-    });
+    }, "#note-delete-btn");
 
     // Settings
-    defaultWpmInput?.addEventListener("change", () => {
+    on(defaultWpmInput, "change", () => {
       const v = clamp(Number(defaultWpmInput.value), 150, 1200);
       state.settings.defaultWpm = v;
       wpmSlider.value = String(v);
       wpmValue.textContent = String(v);
       saveState();
-    });
+    }, "#default-wpm");
 
-    fontSizeSlider?.addEventListener("input", () => {
+    on(fontSizeSlider, "input", () => {
       const v = clamp(Number(fontSizeSlider.value), 22, 72);
       state.settings.fontSize = v;
       applyReaderStyleSettings();
       saveState();
-    });
+    }, "#font-size");
 
-    fontFamilySelect?.addEventListener("change", () => {
+    on(fontFamilySelect, "change", () => {
       state.settings.fontFamily = fontFamilySelect.value;
       applyReaderStyleSettings();
       saveState();
-    });
+    }, "#font-family");
 
-    chunkSizeSelect?.addEventListener("change", () => {
+    on(chunkSizeSelect, "change", () => {
       const v = clamp(Number(chunkSizeSelect.value), 1, 4);
       state.settings.chunkSize = v;
       saveState();
-    });
+    }, "#chunk-size");
 
-    autoPauseCheckbox?.addEventListener("change", () => {
+    on(autoPauseCheckbox, "change", () => {
       state.settings.autoPause = !!autoPauseCheckbox.checked;
       saveState();
-    });
+    }, "#auto-pause");
 
-    tapControlsCheckbox?.addEventListener("change", () => {
+    on(tapControlsCheckbox, "change", () => {
       state.settings.tapControls = !!tapControlsCheckbox.checked;
       saveState();
-    });
+    }, "#tap-controls");
 
-    wakeLockCheckbox?.addEventListener("change", async () => {
+    on(wakeLockCheckbox, "change", async () => {
       state.settings.wakeLock = !!wakeLockCheckbox.checked;
       saveState();
       if (state.settings.wakeLock) {
@@ -1375,18 +1402,18 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       } else {
         await releaseWakeLock();
       }
-    });
+    }, "#wake-lock");
 
-    rememberLastBookCheckbox?.addEventListener("change", () => {
+    on(rememberLastBookCheckbox, "change", () => {
       state.settings.rememberLastBook = !!rememberLastBookCheckbox.checked;
       saveState();
-    });
+    }, "#remember-last-book");
 
     // Export/import from settings too
-    settingsExportBtn?.addEventListener("click", () => void exportData());
-    settingsImportBtn?.addEventListener("click", () => importData());
+    on(settingsExportBtn, "click", () => void exportData(), "#settings-export-btn");
+    on(settingsImportBtn, "click", () => importData(), "#settings-import-btn");
 
-    settingsResetBtn?.addEventListener("click", () => dangerResetBtn?.click());
+    on(settingsResetBtn, "click", () => dangerResetBtn?.click(), "#settings-reset-btn");
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && state.settings.wakeLock && reader.isPlaying) {
@@ -1406,7 +1433,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     });
 
     // Footer optional hooks
-    aboutBtn?.addEventListener("click", () => {
+    on(aboutBtn, "click", () => {
       void openConfirm({
         title: "About SwiftReader",
         message: "SwiftReader is a local-first speed reading tool. No accounts, no tracking — your data stays in your browser unless you export.",
@@ -1414,8 +1441,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         cancelText: "Close",
         hideCancel: true
       });
-    });
-    shortcutsBtn?.addEventListener("click", () => {
+    }, "#about-btn");
+    on(shortcutsBtn, "click", () => {
       void openConfirm({
         title: "Reader shortcuts",
         message: "Tap Play (mobile) or press Space (desktop) to play/pause.\n← / →: Step word\n↑ / ↓: Change speed",
@@ -1423,7 +1450,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         cancelText: "Close",
         hideCancel: true
       });
-    });
+    }, "#shortcuts-btn");
+    return bindings;
   }
 
   /* ---------------------------
@@ -2646,7 +2674,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     upsertBook(updated);
 
     // Sync reader sliders with settings
-    const bookWpm = book.readerState?.wpm ?? state.settings.defaultWpm || 300;
+    const bookWpm = book.readerState?.wpm ?? state.settings.defaultWpm ?? 300;
     const bookPause = book.readerState?.pause ?? state.settings.punctuationPause ?? 80;
     if (wpmSlider) wpmSlider.value = String(bookWpm);
     if (pauseSlider) pauseSlider.value = String(bookPause);
@@ -3672,12 +3700,75 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       "#book-list",
       "#note-list"
     ];
-    const missing = required.filter(sel => !document.querySelector(sel));
+    const missing = required.filter(sel => !safeQuery(sel));
     if (missing.length) {
       console.warn("SwiftReader smoke check: missing elements", missing);
     } else {
       console.info("SwiftReader smoke check: ok");
     }
+  }
+
+  function logBootStatus() {
+    console.groupCollapsed("SwiftReader Boot");
+    console.info(`Version: ${APP_VERSION}`);
+    console.info(`Storage: ${state.library.books.length} books, ${state.notes.length} notes`);
+    const ids = [
+      "#nav-library",
+      "#nav-reader",
+      "#nav-notes",
+      "#nav-settings",
+      "#demo-load-btn",
+      "#paste-add-btn",
+      "#import-confirm-btn",
+      "#btn-play",
+      "#save-note-btn",
+      "#export-btn",
+      "#import-data-btn"
+    ];
+    const found = ids.filter(sel => !!document.querySelector(sel));
+    console.info(`DOM ready: ${found.length}/${ids.length} key elements`);
+    if (bootBindings) {
+      console.info(`Handlers bound: ${bootBindings.bound}/${bootBindings.attempted}`);
+    }
+    console.groupEnd();
+  }
+
+  function initGlobalErrorHandlers() {
+    window.addEventListener("error", (event) => {
+      const message = event?.message || "Unexpected error";
+      notifyGlobalError(message);
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      const reason = event?.reason;
+      const message = reason instanceof Error ? reason.message : String(reason || "Unhandled promise rejection");
+      notifyGlobalError(message);
+    });
+  }
+
+  function notifyGlobalError(message) {
+    showFatalBanner(message);
+    showToast({
+      title: "SwiftReader error",
+      message,
+      type: "error",
+      duration: 6000
+    });
+  }
+
+  function showFatalBanner(message) {
+    if (!fatalBanner) {
+      fatalBanner = document.createElement("div");
+      fatalBanner.className = "fatal-banner";
+      const text = document.createElement("div");
+      text.className = "fatal-banner-text";
+      fatalBanner.appendChild(text);
+      document.body.prepend(fatalBanner);
+    }
+    const textEl = fatalBanner.querySelector(".fatal-banner-text");
+    if (textEl) {
+      textEl.textContent = message || "App failed to start. Open console for details.";
+    }
+    fatalBanner.hidden = false;
   }
 
   function initDebugHelpers() {
@@ -3722,10 +3813,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
      Compatibility: unused buttons in HTML
      (Add Book just opens library import area)
   --------------------------- */
-  addBookBtn?.addEventListener("click", () => {
+  bind(addBookBtn, "click", () => {
     // Focus on import area
     setView("library");
     importTitle?.focus();
-  });
+  }, "#add-book-btn");
 
 })();
