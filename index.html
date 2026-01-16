@@ -184,6 +184,8 @@
                     <button id="paste-clear-btn" class="btn btn-ghost" type="button">Clear</button>
                   </div>
 
+                  <div id="paste-status" class="hint" role="status" aria-live="polite"></div>
+
                   <div class="hint">
                     Your pasted text stays only in your browser storage (unless you export).
                   </div>
@@ -214,6 +216,11 @@
                   <div class="empty-text">
                     Import a file or paste text to create your first book.
                   </div>
+                  <div class="empty-actions">
+                    <button id="empty-demo-btn" class="btn btn-primary" type="button">Load Demo</button>
+                    <button id="empty-paste-btn" class="btn btn-secondary" type="button">Paste Text</button>
+                  </div>
+                  <button id="empty-help-btn" class="btn btn-ghost" type="button">Learn how it works</button>
                 </div>
 
                 <ul id="book-list" class="book-list" aria-label="Books list">
@@ -300,7 +307,7 @@
                   </div>
 
                   <div id="rsvp-subline" class="rsvp-subline subtle" aria-hidden="true">
-                    Tap space / play to start
+                    Tap play (mobile) or press Space (desktop) to start
                   </div>
                 </div>
 
@@ -366,7 +373,7 @@
 
               <div class="card-footer reader-footer">
                 <div class="subtle">
-                  Shortcuts: <kbd>Space</kbd> play/pause • <kbd>←</kbd>/<kbd>→</kbd> step • <kbd>↑</kbd>/<kbd>↓</kbd> speed
+                  Shortcuts: <kbd>Space</kbd> play/pause (desktop) • Tap play (mobile) • <kbd>←</kbd>/<kbd>→</kbd> step • <kbd>↑</kbd>/<kbd>↓</kbd> speed
                 </div>
 
                 <div class="inline-actions">
@@ -531,6 +538,13 @@
                     <span>Tap controls on mobile (left/back, center/pause, right/forward)</span>
                   </label>
                 </div>
+
+                <div class="form-row">
+                  <label class="checkbox">
+                    <input id="wake-lock" type="checkbox" />
+                    <span>Keep screen awake while reading (if supported)</span>
+                  </label>
+                </div>
               </div>
             </section>
 
@@ -599,8 +613,8 @@
           </p>
 
           <ul class="list">
-            <li>Use <kbd>Space</kbd> to play/pause.</li>
-            <li>Use <kbd>←</kbd>/<kbd>→</kbd> to step back/forward.</li>
+            <li>Use <kbd>Space</kbd> (desktop) or tap Play (mobile) to play/pause.</li>
+            <li>Use <kbd>←</kbd>/<kbd>→</kbd> (desktop) or tap left/right zones (mobile) to step back/forward.</li>
             <li>Adjust WPM and punctuation pauses to match the text difficulty.</li>
           </ul>
 
@@ -615,6 +629,30 @@
         </div>
       </div>
     </div>
+
+    <!-- =========================
+         CONFIRM MODAL (reusable)
+    ========================== -->
+    <div id="modal-confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+      <div class="modal-backdrop" data-close="true"></div>
+      <div class="modal-card" role="document">
+        <div class="modal-header">
+          <h2 id="confirm-title" class="h2">Confirm action</h2>
+          <button class="btn btn-ghost btn-icon" type="button" data-close="true" aria-label="Close dialog">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <p id="confirm-message" class="subtle">Are you sure you want to continue?</p>
+        </div>
+
+        <div class="modal-footer">
+          <button id="confirm-cancel-btn" class="btn btn-ghost" type="button" data-close="true">Cancel</button>
+          <button id="confirm-ok-btn" class="btn btn-danger" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
     <footer class="app-footer" role="contentinfo">
       <div class="subtle">
