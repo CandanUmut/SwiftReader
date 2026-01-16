@@ -276,7 +276,23 @@
           </div>
 
           <div class="reader-shell">
-            <section class="card reader-stage" aria-label="Reading stage">
+            <div class="reader-main">
+              <section class="card reader-page" aria-label="Page view">
+                <div class="card-header reader-page-header">
+                  <div>
+                    <h2 class="h2">Page View</h2>
+                    <div id="page-progress" class="subtle">0% • word 0 / 0</div>
+                  </div>
+                </div>
+
+                <div class="card-body">
+                  <div id="page-view" class="page-view" tabindex="0" aria-label="Scrollable page text">
+                    <p class="subtle">Select a book to start reading.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card reader-stage" aria-label="Reading stage">
               <div class="card-header reader-stage-header">
                 <div class="reader-book">
                   <div id="reader-book-title" class="reader-book-title">No book selected</div>
@@ -284,6 +300,14 @@
                 </div>
 
                 <div class="reader-stage-actions">
+                  <div class="reader-mode-toggle" role="tablist" aria-label="Reader mode">
+                    <button id="toggle-page" class="segmented is-active" type="button" role="tab" aria-selected="true">
+                      Page
+                    </button>
+                    <button id="toggle-rsvp" class="segmented" type="button" role="tab" aria-selected="false">
+                      RSVP
+                    </button>
+                  </div>
                   <div class="pill" id="reader-wpm-pill" title="Words per minute">
                     <span class="pill-label">WPM</span>
                     <span class="pill-value" id="wpm-value">300</span>
@@ -295,26 +319,34 @@
                 </div>
               </div>
 
-              <div class="card-body reader-stage-body">
-                <div class="rsvp-frame" aria-label="RSVP word display">
-                  <div class="pivot-line" aria-hidden="true"></div>
+                <div class="card-body reader-stage-body">
+                  <div class="rsvp-frame" aria-label="RSVP word display">
+                    <div class="pivot-line" aria-hidden="true"></div>
 
-                  <!-- The word renderer: left / pivot / right aligned around pivot line -->
-                  <div id="rsvp-word" class="rsvp-word" role="status" aria-live="polite" aria-atomic="true">
-                    <span class="rsvp-left" id="rsvp-left">Ready</span>
-                    <span class="rsvp-pivot" id="rsvp-pivot">•</span>
-                    <span class="rsvp-right" id="rsvp-right">Set</span>
+                    <!-- The word renderer: left / pivot / right aligned around pivot line -->
+                    <div id="rsvp-word" class="rsvp-word" role="status" aria-live="polite" aria-atomic="true">
+                      <span class="rsvp-left" id="rsvp-left">Ready</span>
+                      <span class="rsvp-pivot" id="rsvp-pivot">•</span>
+                      <span class="rsvp-right" id="rsvp-right">Set</span>
+                    </div>
+
+                    <div id="rsvp-subline" class="rsvp-subline subtle" aria-hidden="true">
+                      Tap Play (mobile) or press Space (desktop) to start
+                    </div>
                   </div>
 
-                  <div id="rsvp-subline" class="rsvp-subline subtle" aria-hidden="true">
-                    Tap Play (mobile) or press Space (desktop) to start
+                  <div class="reader-progress" aria-label="Reading progress">
+                    <label class="label" for="progress-slider">Position</label>
+                    <input id="progress-slider" class="range range-scrub" type="range" min="0" max="100" value="0" step="1" />
+                    <div class="progress-meta">
+                      <span id="progress-label" class="subtle">0% • word 0 / 0</span>
+                    </div>
                   </div>
-                </div>
 
-                <div class="reader-controls" aria-label="Reader controls">
-                  <button id="btn-back-sent" class="btn btn-ghost" type="button" title="Back sentence">
-                    ⟲ Sent
-                  </button>
+                  <div class="reader-controls" aria-label="Reader controls">
+                    <button id="btn-back-sent" class="btn btn-ghost" type="button" title="Back sentence">
+                      ⟲ Sent
+                    </button>
                   <button id="btn-back" class="btn btn-ghost" type="button" title="Back 3 words">
                     ⟲ 3
                   </button>
@@ -381,7 +413,8 @@
                   <button id="btn-add-note" class="btn btn-secondary" type="button">Add Note</button>
                 </div>
               </div>
-            </section>
+              </section>
+            </div>
 
             <aside class="card reader-side" aria-label="Context & notes">
               <div class="card-header">
@@ -404,6 +437,14 @@
                 <div class="subhead">Saved notes</div>
                 <ul id="note-list" class="note-list" aria-label="Notes list">
                   <!-- JS renders notes -->
+                </ul>
+
+                <hr class="divider" />
+
+                <div class="subhead">Bookmarks</div>
+                <div id="bookmark-empty" class="hint subtle">No bookmarks yet.</div>
+                <ul id="bookmark-list" class="bookmark-list" aria-label="Bookmarks list">
+                  <!-- JS renders bookmarks -->
                 </ul>
               </div>
             </aside>

@@ -820,8 +820,18 @@ button, input, textarea, select {
   align-items: start;
 }
 
+.reader-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: var(--gap2);
+}
+
 @media (max-width: 1100px) {
   .reader-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .reader-main {
     grid-template-columns: 1fr;
   }
 }
@@ -842,11 +852,64 @@ button, input, textarea, select {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .reader-stage-body {
   display: grid;
   gap: 14px;
+}
+
+.reader-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.page-view {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 6px;
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.page-view p {
+  margin: 0 0 14px;
+}
+
+.page-view p:last-child {
+  margin-bottom: 0;
+}
+
+.reader-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  background: color-mix(in srgb, var(--card2) 70%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.segmented {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.segmented.is-active {
+  background: var(--primary);
+  color: white;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
 }
 
 .rsvp-frame {
@@ -861,6 +924,8 @@ button, input, textarea, select {
   overflow: hidden;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  --rsvpMaxLeft: var(--maxLeft);
+  --rsvpMaxRight: var(--maxRight);
 }
 
 .pivot-line {
@@ -878,18 +943,21 @@ button, input, textarea, select {
   display: flex;
   align-items: baseline;
   justify-content: center;
+  max-width: 100%;
   font-size: var(--rsvpFontSize);
   font-weight: var(--rsvpFontWeight);
   letter-spacing: -0.6px;
   line-height: 1.05;
   user-select: none;
+  overflow: hidden;
 }
 
 .rsvp-left {
-  width: var(--maxLeft);
+  width: var(--rsvpMaxLeft);
   text-align: right;
   padding-right: 0.25ch;
   opacity: 0.95;
+  overflow: hidden;
 }
 
 .rsvp-pivot {
@@ -902,16 +970,81 @@ button, input, textarea, select {
 }
 
 .rsvp-right {
-  width: var(--maxRight);
+  width: var(--rsvpMaxRight);
   text-align: left;
   padding-left: 0.25ch;
   opacity: 0.95;
+  overflow: hidden;
 }
 
 .rsvp-subline {
   margin-top: 10px;
   font-size: 13px;
   text-align: center;
+}
+
+.reader-progress {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card2) 90%, transparent);
+  border-radius: 18px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.range-scrub {
+  height: 36px;
+}
+
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bookmark-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.bookmark-item {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--card2) 85%, transparent);
+}
+
+.bookmark-button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+}
+
+.bookmark-meta {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+@media (max-width: 1100px) {
+  #view-reader[data-reader-mode="page"] .reader-stage {
+    display: none;
+  }
+
+  #view-reader[data-reader-mode="rsvp"] .reader-page {
+    display: none;
+  }
 }
 
 .reader-controls {
@@ -959,6 +1092,27 @@ button, input, textarea, select {
     --rsvpFontSize: 38px;
     --maxLeft: 12ch;
     --maxRight: 18ch;
+  }
+
+  .page-view {
+    max-height: 55vh;
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    --rsvpFontSize: 34px;
+    --maxLeft: 10ch;
+    --maxRight: 14ch;
+  }
+}
+
+@media (max-width: 360px) {
+  :root {
+    --rsvpFontSize: 30px;
+    --maxLeft: 8ch;
+    --maxRight: 12ch;
   }
 }
 
