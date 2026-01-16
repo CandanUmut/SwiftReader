@@ -38,8 +38,56 @@
     return true;
   }
 
-  function safeJsonParse(s, fallback) {
-    try { return JSON.parse(s); } catch { return fallback; }
+  const bootToasts = [];
+  let pendingMigrationWrite = null;
+
+  function enqueueBootToast(toast) {
+    if (!toast) return;
+    bootToasts.push(toast);
+  }
+
+  function flushBootToasts() {
+    if (!bootToasts.length) return;
+    bootToasts.splice(0).forEach(payload => showToast(payload));
+  }
+
+  function safeParseJSON(raw, fallback, contextLabel = "data") {
+    if (raw === null || raw === undefined || raw === "") return fallback;
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      console.warn(`SwiftReader: failed to parse ${contextLabel}`, err);
+      const toastPayload = {
+        title: "Data load issue",
+        message: `We couldn't read ${contextLabel}. Loading defaults instead.`,
+        type: "error",
+        duration: 7000,
+        actions: [
+          { label: "Export raw storage", handler: () => exportRawStorage() }
+        ]
+      };
+      if (globalThis.__swiftreaderToastReady) {
+        showToast(toastPayload);
+      } else {
+        enqueueBootToast(toastPayload);
+      }
+      return fallback;
+    }
+  }
+
+  function safeStringifyJSON(obj, contextLabel = "data") {
+    try {
+      return JSON.stringify(obj);
+    } catch (err) {
+      console.error(`SwiftReader: failed to serialize ${contextLabel}`, err);
+      showToast({
+        title: "Data save failed",
+        message: "Unable to save changes to storage.",
+        type: "error",
+        duration: 6000
+      });
+      return null;
+    }
   }
 
   function uid(prefix = "id") {
@@ -280,10 +328,13 @@
   --------------------------- */
   const STORE_KEY = "swiftreader_v1";
 
+  const CURRENT_SCHEMA_VERSION = 5;
+
   const defaultState = () => ({
-    version: 2,
+    version: CURRENT_SCHEMA_VERSION,
     createdAt: nowISO(),
-    updatedAt: nowISO(),
+    updatedAt: Date.now(),
+    lastOpenedBookId: null,
     settings: {
       theme: "system", // "system" | "dark" | "light"
       defaultWpm: 300,
@@ -295,7 +346,9 @@
       punctuationPause: 80, // 0-200 slider value
       chunkSize: 1,
       wakeLock: false,
-      readerMode: null
+      readerMode: null,
+      autoRemoveHeadersFooters: true,
+      customIgnorePhrases: ""
     },
     reader: {
       currentBookId: null
@@ -326,30 +379,109 @@
 
   let state = loadState();
 
+  function inferVersion(rawState) {
+    if (rawState && typeof rawState.version === "number") return rawState.version;
+    if (rawState?.library?.books || rawState?.reader) return 2;
+    if (Array.isArray(rawState?.books) || Array.isArray(rawState?.notes)) return 1;
+    return 0;
+  }
+
+  function normalizeSettings(settings) {
+    const base = defaultState().settings;
+    return {
+      ...base,
+      ...(settings || {}),
+      defaultWpm: Number(settings?.defaultWpm ?? base.defaultWpm) || base.defaultWpm,
+      fontSize: Number(settings?.fontSize ?? base.fontSize) || base.fontSize,
+      punctuationPause: typeof settings?.punctuationPause === "number" ? settings.punctuationPause : base.punctuationPause,
+      chunkSize: Number(settings?.chunkSize ?? base.chunkSize) || base.chunkSize,
+      autoPause: settings?.autoPause !== undefined ? !!settings.autoPause : base.autoPause,
+      tapControls: settings?.tapControls !== undefined ? !!settings.tapControls : base.tapControls,
+      rememberLastBook: settings?.rememberLastBook !== undefined ? !!settings.rememberLastBook : base.rememberLastBook,
+      wakeLock: settings?.wakeLock !== undefined ? !!settings.wakeLock : base.wakeLock,
+      autoRemoveHeadersFooters: settings?.autoRemoveHeadersFooters !== undefined
+        ? !!settings.autoRemoveHeadersFooters
+        : base.autoRemoveHeadersFooters,
+      customIgnorePhrases: typeof settings?.customIgnorePhrases === "string" ? settings.customIgnorePhrases : base.customIgnorePhrases
+    };
+  }
+
+  function normalizeNote(note) {
+    return {
+      id: note?.id || uid("note"),
+      bookId: note?.bookId || "",
+      bookTitle: note?.bookTitle || "",
+      index: typeof note?.index === "number" ? note.index : (note?.wordIndex ?? 0),
+      wordIndex: typeof note?.wordIndex === "number" ? note.wordIndex : (note?.index ?? 0),
+      excerpt: note?.excerpt || "",
+      text: (note?.text || "").trim(),
+      createdAt: note?.createdAt || nowISO(),
+      updatedAt: note?.updatedAt || nowISO()
+    };
+  }
+
+  function migrateState(rawState) {
+    try {
+      const base = defaultState();
+      const inferredVersion = inferVersion(rawState);
+      const source = rawState?.state && typeof rawState.state === "object" ? rawState.state : rawState;
+      const books = Array.isArray(source?.books)
+        ? source.books
+        : Array.isArray(source?.library?.books)
+          ? source.library.books
+          : [];
+      const notes = Array.isArray(source?.notes) ? source.notes : [];
+      const settings = normalizeSettings(source?.settings || source?.state?.settings);
+      const reader = source?.reader || source?.state?.reader || {};
+      const lastOpenedBookId = source?.lastOpenedBookId ?? source?.library?.lastOpenedBookId ?? null;
+
+      const migrated = {
+        ...base,
+        ...source,
+        version: CURRENT_SCHEMA_VERSION,
+        updatedAt: Date.now(),
+        lastOpenedBookId,
+        settings,
+        reader: { ...base.reader, ...(reader || {}) },
+        library: {
+          ...base.library,
+          ...(source?.library || {}),
+          books: books.map(b => normalizeBook(b)),
+          lastOpenedBookId
+        },
+        notes: notes.map(n => normalizeNote(n)),
+        storage: { ...base.storage, ...(source?.storage || {}) }
+      };
+
+      if (!Array.isArray(migrated.library.books)) migrated.library.books = [];
+      if (!Array.isArray(migrated.notes)) migrated.notes = [];
+
+      if (inferredVersion !== CURRENT_SCHEMA_VERSION) {
+        pendingMigrationWrite = migrated;
+      }
+
+      return migrated;
+    } catch (err) {
+      console.warn("SwiftReader migration failed", err);
+      enqueueBootToast({
+        title: "Migration issue",
+        message: "We couldn't fully migrate stored data. Some items may be missing.",
+        type: "warning",
+        duration: 7000,
+        actions: [
+          { label: "Export raw storage", handler: () => exportRawStorage() }
+        ]
+      });
+      return defaultState();
+    }
+  }
+
   function loadState() {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return defaultState();
-    const parsed = safeJsonParse(raw, null);
+    const parsed = safeParseJSON(raw, null, "local storage");
     if (!parsed || typeof parsed !== "object") return defaultState();
-
-    // Merge shallowly to avoid missing keys
-    const base = defaultState();
-    const merged = {
-      ...base,
-      ...parsed,
-      settings: { ...base.settings, ...(parsed.settings || {}) },
-      reader: { ...base.reader, ...(parsed.reader || {}) },
-      library: { ...base.library, ...(parsed.library || {}) },
-      notes: Array.isArray(parsed.notes) ? parsed.notes : [],
-      storage: { ...base.storage, ...(parsed.storage || {}) }
-    };
-
-    // Ensure books array
-    if (!Array.isArray(merged.library.books)) merged.library.books = [];
-    // Ensure each book has required fields
-    merged.library.books = merged.library.books.map(b => normalizeBook(b));
-    merged.updatedAt = nowISO();
-    return merged;
+    return migrateState(parsed);
   }
 
   function serializeStateForStorage() {
@@ -369,11 +501,34 @@
   }
 
   function saveState() {
-    state.updatedAt = nowISO();
+    state.updatedAt = Date.now();
     const toStore = serializeStateForStorage();
-    localStorage.setItem(STORE_KEY, JSON.stringify(toStore));
+    const serialized = safeStringifyJSON(toStore, "local storage");
+    if (!serialized) return;
+    localStorage.setItem(STORE_KEY, serialized);
     updateStorageEstimate();
     void persistSettingsToIdb();
+  }
+
+  function exportRawStorage() {
+    const raw = localStorage.getItem(STORE_KEY) || "";
+    const payload = {
+      exportedAt: nowISO(),
+      app: "SwiftReader",
+      storeKey: STORE_KEY,
+      raw
+    };
+    const serialized = safeStringifyJSON(payload, "raw storage");
+    if (!serialized) return;
+    const blob = new Blob([serialized], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `swiftreader-raw-storage-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   function normalizeBook(b) {
@@ -381,10 +536,16 @@
       id: b?.id || uid("book"),
       title: (b?.title || "Untitled").trim() || "Untitled",
       author: (b?.author || "").trim(),
-      tags: Array.isArray(b?.tags) ? b.tags : [],
+      tags: Array.isArray(b?.tags) ? b.tags : (typeof b?.tags === "string" ? b.tags.split(",").map(tag => tag.trim()).filter(Boolean) : []),
       addedAt: b?.addedAt || nowISO(),
       updatedAt: b?.updatedAt || nowISO(),
-      sourceType: b?.sourceType || "paste",
+      sourceType: b?.sourceType || b?.type || "paste",
+      type: b?.type || b?.sourceType || "paste",
+      source: {
+        filename: b?.source?.filename || b?.filename || "",
+        fileType: b?.source?.fileType || b?.fileType || "",
+        size: typeof b?.source?.size === "number" ? b.source.size : (typeof b?.size === "number" ? b.size : null)
+      },
       text: typeof b?.text === "string" ? b.text : "",
       tokens: Array.isArray(b?.tokens) ? b.tokens : [],
       wordCount: typeof b?.wordCount === "number" ? b.wordCount : 0,
@@ -392,6 +553,9 @@
       contentStored: b?.contentStored || (b?.text ? "local" : "idb"),
       progress: {
         index: typeof b?.progress?.index === "number" ? b.progress.index : 0,
+        wordIndex: typeof b?.progress?.wordIndex === "number" ? b.progress.wordIndex : (b?.progress?.index ?? 0),
+        percent: typeof b?.progress?.percent === "number" ? b.progress.percent : 0,
+        pdfPage: typeof b?.progress?.pdfPage === "number" ? b.progress.pdfPage : null,
         updatedAt: b?.progress?.updatedAt || nowISO(),
         bookmarks: Array.isArray(b?.progress?.bookmarks) ? b.progress.bookmarks : []
       },
@@ -437,6 +601,7 @@
     // Remove notes for that book
     state.notes = state.notes.filter(n => n.bookId !== bookId);
     if (state.library.lastOpenedBookId === bookId) state.library.lastOpenedBookId = null;
+    if (state.lastOpenedBookId === bookId) state.lastOpenedBookId = null;
     saveState();
     void deleteBookFromIdb(bookId);
   }
@@ -714,6 +879,8 @@
   const tapControlsCheckbox = $("#tap-controls");
   const wakeLockCheckbox = $("#wake-lock");
   const rememberLastBookCheckbox = $("#remember-last-book");
+  const autoRemoveHeadersCheckbox = $("#auto-remove-headers");
+  const customIgnorePhrasesInput = $("#custom-ignore-phrases");
   const encryptExportCheckbox = $("#encrypt-export"); // stub
 
   const settingsExportBtn = $("#settings-export-btn");
@@ -817,12 +984,18 @@
     await migrateLocalStorageToIdb();
     await hydrateBooksFromIdb();
     await hydrateNotesFromIdb();
+    if (pendingMigrationWrite) {
+      pendingMigrationWrite = null;
+      saveState();
+    }
+    globalThis.__swiftreaderToastReady = true;
     applyThemeFromSettings();
     applyReaderStyleSettings();
     hydrateSettingsUI();
     initReaderMode();
     runSmokeChecks();
     initDebugHelpers();
+    flushBootToasts();
     bootBindings = wireEvents();
     logBootStatus();
     renderAll();
@@ -1055,7 +1228,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
             tags,
             text: item.text,
             sourceType: item.sourceType || "paste",
-            contentExtras: item.contentExtras
+            contentExtras: item.contentExtras,
+            tokens: item.tokens,
+            wordCount: item.wordCount,
+            sourceMeta: item.sourceMeta
           });
           upsertBook(book);
           created.push(book);
@@ -1078,7 +1254,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         tags,
         text: item?.text || importBuffer.text,
         sourceType: item?.sourceType || importBuffer.sourceType || "paste",
-        contentExtras: item?.contentExtras
+        contentExtras: item?.contentExtras,
+        tokens: item?.tokens,
+        wordCount: item?.wordCount,
+        sourceMeta: item?.sourceMeta
       });
 
       upsertBook(book);
@@ -1409,6 +1588,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       saveState();
     }, "#remember-last-book");
 
+    on(autoRemoveHeadersCheckbox, "change", () => {
+      state.settings.autoRemoveHeadersFooters = !!autoRemoveHeadersCheckbox.checked;
+      saveState();
+    }, "#auto-remove-headers");
+
+    on(customIgnorePhrasesInput, "change", () => {
+      state.settings.customIgnorePhrases = customIgnorePhrasesInput.value || "";
+      saveState();
+    }, "#custom-ignore-phrases");
+
     // Export/import from settings too
     on(settingsExportBtn, "click", () => void exportData(), "#settings-export-btn");
     on(settingsImportBtn, "click", () => importData(), "#settings-import-btn");
@@ -1615,8 +1804,13 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
   }
 
-  function showToast({ title, message, type = "info", duration = 3200, action } = {}) {
+  function showToast({ title, message, type = "info", duration = 3200, action, actions } = {}) {
     if (!toastRegion) return;
+    const actionList = Array.isArray(actions)
+      ? actions
+      : (action && action.label && typeof action.onClick === "function")
+        ? [{ label: action.label, handler: action.onClick }]
+        : [];
     const toast = document.createElement("div");
     toast.className = "toast";
     toast.setAttribute("role", "status");
@@ -1636,18 +1830,20 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       toast.appendChild(m);
     }
 
-    if (action && action.label && typeof action.onClick === "function") {
+    if (actionList.length) {
       const actions = document.createElement("div");
       actions.className = "toast-actions";
-      const btn = document.createElement("button");
-      btn.className = "btn btn-secondary btn-sm";
-      btn.type = "button";
-      btn.textContent = action.label;
-      btn.addEventListener("click", () => {
-        action.onClick();
-        toast.remove();
+      actionList.forEach(entry => {
+        const btn = document.createElement("button");
+        btn.className = "btn btn-secondary btn-sm";
+        btn.type = "button";
+        btn.textContent = entry.label;
+        btn.addEventListener("click", () => {
+          entry.handler?.();
+          toast.remove();
+        });
+        actions.appendChild(btn);
       });
-      actions.appendChild(btn);
       toast.appendChild(actions);
     }
 
@@ -1707,6 +1903,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (tapControlsCheckbox) tapControlsCheckbox.checked = !!state.settings.tapControls;
     if (wakeLockCheckbox) wakeLockCheckbox.checked = !!state.settings.wakeLock;
     if (rememberLastBookCheckbox) rememberLastBookCheckbox.checked = !!state.settings.rememberLastBook;
+    if (autoRemoveHeadersCheckbox) autoRemoveHeadersCheckbox.checked = !!state.settings.autoRemoveHeadersFooters;
+    if (customIgnorePhrasesInput) customIgnorePhrasesInput.value = state.settings.customIgnorePhrases || "";
 
     if (pauseSlider) pauseSlider.value = String(state.settings.punctuationPause ?? 80);
   }
@@ -1777,6 +1975,180 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pasteStatus.textContent = message || "";
   }
 
+  function normalizeLineForMatch(text) {
+    return String(text || "")
+      .toLowerCase()
+      .replace(/[^\w\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function removeDigits(text) {
+    return String(text || "").replace(/\d+/g, "").trim();
+  }
+
+  function parseCustomIgnorePhrases(raw) {
+    return String(raw || "")
+      .split("\n")
+      .map(line => line.trim())
+      .filter(Boolean);
+  }
+
+  function isPageNumberLike(text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return false;
+    const compact = trimmed.replace(/\s+/g, "");
+    if (/^\d+$/.test(compact)) return true;
+    if (/^\d+\/\d+$/.test(compact)) return true;
+    if (/^page\s*\d+/i.test(trimmed)) return true;
+    if (/^(page\s*)?[ivxlcdm]+$/i.test(compact)) return true;
+    return false;
+  }
+
+  function extractPdfLines(content, pageIndex, pageHeight) {
+    const items = (content?.items || [])
+      .map(item => ({
+        text: item?.str || "",
+        x: item?.transform?.[4] || 0,
+        y: item?.transform?.[5] || 0
+      }))
+      .filter(item => item.text.trim().length);
+
+    items.sort((a, b) => {
+      if (Math.abs(b.y - a.y) > 1) return b.y - a.y;
+      return a.x - b.x;
+    });
+
+    const lines = [];
+    const tolerance = 2;
+    for (const item of items) {
+      const last = lines[lines.length - 1];
+      if (!last || Math.abs(last.y - item.y) > tolerance) {
+        lines.push({ y: item.y, items: [item] });
+      } else {
+        last.items.push(item);
+      }
+    }
+
+    return lines.map(line => {
+      const text = line.items
+        .sort((a, b) => a.x - b.x)
+        .map(i => i.text)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return {
+        pageIndex,
+        y: line.y,
+        text,
+        pageHeight
+      };
+    }).filter(line => line.text.length);
+  }
+
+  function buildPdfStripRules(pages, options = {}) {
+    const totalPages = pages.length || 0;
+    const topBand = options.topBand ?? 0.12;
+    const bottomBand = options.bottomBand ?? 0.12;
+    const minPct = options.minFrequency ?? 0.4;
+    const minLen = options.minLength ?? 3;
+    const maxLen = options.maxLength ?? 80;
+    const lineMap = new Map();
+
+    pages.forEach(page => {
+      const height = page.pageHeight || 0;
+      const topMin = height * (1 - topBand);
+      const bottomMax = height * bottomBand;
+      const seen = new Set();
+      (page.lines || []).forEach(line => {
+        if (line.y < bottomMax || line.y > topMin) {
+          const norm = normalizeLineForMatch(line.text);
+          const normNoDigits = removeDigits(norm);
+          const candidates = [norm, normNoDigits].filter(Boolean);
+          candidates.forEach(key => {
+            if (key.length < minLen || key.length > maxLen) return;
+            if (seen.has(key)) return;
+            seen.add(key);
+            if (!lineMap.has(key)) lineMap.set(key, new Set());
+            lineMap.get(key).add(page.pageIndex);
+          });
+        }
+      });
+    });
+
+    const removeSet = new Set();
+    lineMap.forEach((pagesSet, key) => {
+      if (totalPages && pagesSet.size / totalPages >= minPct) {
+        removeSet.add(key);
+      }
+    });
+
+    const customPhrases = (options.customPhrases || [])
+      .map(phrase => normalizeLineForMatch(phrase))
+      .filter(Boolean);
+
+    return { removeSet, customPhrases };
+  }
+
+  function stripPdfHeadersFooters(pages, options = {}) {
+    if (!pages.length) return { pageTexts: [], pageRanges: [] };
+    const enabled = options.enabled !== false;
+    const rules = buildPdfStripRules(pages, options);
+
+    const pageTexts = pages.map(page => {
+      const filtered = (page.lines || []).filter(line => {
+        if (!enabled && !rules.customPhrases.length) return true;
+        const rawText = line.text.trim();
+        if (!rawText) return false;
+        const norm = normalizeLineForMatch(rawText);
+        const normNoDigits = removeDigits(norm);
+        const wordCount = rawText.split(/\s+/).filter(Boolean).length;
+        if (rawText.length > 120 || wordCount > 15) return true;
+        if (isPageNumberLike(rawText)) return false;
+        if (rules.removeSet.has(norm) || rules.removeSet.has(normNoDigits)) return false;
+        if (rules.customPhrases.length) {
+          const matchesCustom = rules.customPhrases.some(phrase => norm.includes(phrase) || normNoDigits.includes(phrase));
+          if (matchesCustom) return false;
+        }
+        return true;
+      });
+
+      const ordered = filtered
+        .sort((a, b) => b.y - a.y)
+        .map(line => line.text)
+        .join("\n");
+      return normalizeText(ordered);
+    });
+
+    return { pageTexts };
+  }
+
+  function buildPdfContentFromPages(pages, options = {}) {
+    const { pageTexts } = stripPdfHeadersFooters(pages, options);
+    const tokensByPage = pageTexts.map(text => tokenize(text));
+    const wordCounts = tokensByPage.map(tokens => countWords(tokens));
+    let cursor = 0;
+    const pageRanges = wordCounts.map((wordCount, idx) => {
+      const start = cursor;
+      const end = wordCount ? cursor + wordCount - 1 : cursor;
+      cursor += wordCount;
+      return {
+        page: idx + 1,
+        start,
+        end,
+        wordCount
+      };
+    });
+    const combinedText = pageTexts.join("\n\n");
+    const combinedTokens = tokensByPage.flat();
+    return {
+      text: combinedText,
+      tokens: combinedTokens,
+      wordCount: countWords(combinedTokens),
+      pageRanges
+    };
+  }
+
   async function extractTextFromPdf(file, onStatus) {
     const pdfjsLib = window["pdfjs-dist/build/pdf"];
     if (!pdfjsLib) {
@@ -1792,12 +2164,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     for (let i = 1; i <= totalPages; i += 1) {
       onStatus?.(`Extracting PDF… page ${i} / ${totalPages}`);
       const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 1 });
       const content = await page.getTextContent();
-      const rawPageText = content.items.map(item => item.str || "").join(" ");
-      const normalizedPageText = normalizeText(rawPageText);
-      const pageTokens = tokenize(normalizedPageText);
-      const wordCount = countWords(pageTokens);
-      pages.push({ text: normalizedPageText, wordCount });
+      const lines = extractPdfLines(content, i, viewport.height);
+      const normalizedPageText = normalizeText(lines.map(line => line.text).join("\n"));
+      pages.push({
+        pageIndex: i,
+        pageHeight: viewport.height,
+        lines,
+        text: normalizedPageText
+      });
       await sleep(0);
     }
 
@@ -1805,19 +2181,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (totalPages > 1 && combined.trim().length < 300) {
       onStatus?.("Scanned PDF detected.");
     }
-    let cursor = 0;
-    const pageRanges = pages.map((page, idx) => {
-      const start = cursor;
-      const end = page.wordCount ? cursor + page.wordCount - 1 : cursor;
-      cursor += page.wordCount;
-      return {
-        page: idx + 1,
-        start,
-        end,
-        wordCount: page.wordCount
-      };
-    });
-    return { text: combined, totalPages, pageRanges, fileData: buffer };
+    return { pages, text: combined, totalPages, fileData: buffer };
   }
 
   async function extractTextFromEpub(file, onStatus) {
@@ -1853,6 +2217,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   async function parseImportFile(file, index, total) {
     const name = file.name || "Untitled";
     const lower = name.toLowerCase();
+    const sourceMeta = {
+      filename: name,
+      fileType: file.type || "",
+      size: typeof file.size === "number" ? file.size : null
+    };
     setImportStatus(total > 1 ? `Reading ${index + 1} / ${total}…` : "Reading file…");
 
     if (lower.endsWith(".txt") || lower.endsWith(".md")) {
@@ -1863,6 +2232,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         text: normalizeText(text),
         sourceType: lower.endsWith(".md") ? "md" : "txt",
         suggestedTitle: baseTitle,
+        sourceMeta,
         contentExtras: {
           fileType: file.type || "text/plain"
         }
@@ -1871,31 +2241,46 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (lower.endsWith(".pdf")) {
       const baseTitle = name.replace(/\.pdf$/i, "");
-      const result = await extractTextFromPdf(file, status => setImportStatus(status));
-      const text = result?.text || "";
-      const totalPages = result?.totalPages || 1;
-      if (totalPages > 1 && text.trim().length < 300) {
-        setImportStatus("Scanned PDF detected.");
-        showToast({ title: "Scanned PDF detected", message: "OCR is not supported yet.", type: "error" });
-        return null;
-      }
-      if (!text || text.length < 40) {
-        setImportStatus("No text found in PDF.");
-        showToast({ title: "No text found", message: "This PDF may be scanned or image-based.", type: "error" });
-        return null;
-      }
-      return {
-        file,
-        text: normalizeText(text),
-        sourceType: "pdf",
-        suggestedTitle: baseTitle,
-        contentExtras: {
-          fileData: result?.fileData || null,
-          fileType: file.type || "application/pdf",
-          pageRanges: result?.pageRanges || [],
-          pdfTotalPages: totalPages
+      try {
+        const result = await extractTextFromPdf(file, status => setImportStatus(status));
+        const text = result?.text || "";
+        const totalPages = result?.totalPages || 1;
+        if (totalPages > 1 && text.trim().length < 300) {
+          setImportStatus("Scanned PDF detected.");
+          showToast({ title: "Scanned PDF detected", message: "OCR is not supported yet.", type: "error" });
+          return null;
         }
-      };
+        if (!text || text.length < 40) {
+          setImportStatus("No text found in PDF.");
+          showToast({ title: "No text found", message: "This PDF may be scanned or image-based.", type: "error" });
+          return null;
+        }
+        const stripOptions = {
+          enabled: state.settings.autoRemoveHeadersFooters,
+          customPhrases: parseCustomIgnorePhrases(state.settings.customIgnorePhrases)
+        };
+        const { text: strippedText, tokens, wordCount, pageRanges } = buildPdfContentFromPages(result.pages || [], stripOptions);
+        return {
+          file,
+          text: normalizeText(strippedText || text),
+          tokens,
+          wordCount,
+          sourceType: "pdf",
+          suggestedTitle: baseTitle,
+          sourceMeta,
+          contentExtras: {
+            fileData: result?.fileData || null,
+            fileType: file.type || "application/pdf",
+            pageRanges,
+            pdfTotalPages: totalPages
+          }
+        };
+      } catch (err) {
+        console.error("PDF import failed", err);
+        setImportStatus("PDF import failed.");
+        showToast({ title: "PDF import failed", message: "Please try another PDF.", type: "error" });
+        return null;
+      }
     }
 
     if (lower.endsWith(".epub")) {
@@ -1911,6 +2296,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         text: normalizeText(text),
         sourceType: "epub",
         suggestedTitle: title || baseTitle,
+        sourceMeta,
         contentExtras: {
           fileData,
           fileType: file.type || "application/epub+zip"
@@ -1971,10 +2357,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     setImportStatus("");
   }
 
-  async function createBookFromText({ title, author, tags, text, sourceType, contentExtras }) {
+  async function createBookFromText({ title, author, tags, text, sourceType, contentExtras, tokens: tokenOverride, wordCount: wordCountOverride, sourceMeta }) {
     const normalizedText = normalizeText(text);
-    const tokens = tokenize(normalizedText);
-    const wc = countWords(tokens);
+    const tokens = Array.isArray(tokenOverride) ? tokenOverride : tokenize(normalizedText);
+    const wc = typeof wordCountOverride === "number" ? wordCountOverride : countWords(tokens);
     const book = {
       id: uid("book"),
       title: title || "Untitled",
@@ -1983,6 +2369,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       addedAt: nowISO(),
       updatedAt: nowISO(),
       sourceType: sourceType || "paste",
+      source: {
+        filename: sourceMeta?.filename || "",
+        fileType: sourceMeta?.fileType || "",
+        size: typeof sourceMeta?.size === "number" ? sourceMeta.size : null
+      },
       text: "",
       tokens: [],
       wordCount: wc,
@@ -2641,7 +3032,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
   function restoreLastBookIfNeeded() {
     if (!state.settings.rememberLastBook) return;
-    const lastId = state.reader?.currentBookId || state.library.lastOpenedBookId;
+    const lastId = state.reader?.currentBookId || state.library.lastOpenedBookId || state.lastOpenedBookId;
     if (!lastId) return;
     const b = getBook(lastId);
     if (!b) return;
@@ -2659,7 +3050,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     selectedBookId = book.id;
     state.reader.currentBookId = book.id;
-    if (state.settings.rememberLastBook) state.library.lastOpenedBookId = book.id;
+    if (state.settings.rememberLastBook) {
+      state.library.lastOpenedBookId = book.id;
+      state.lastOpenedBookId = book.id;
+    }
 
     // Update book stats
     const updated = {
@@ -3557,7 +3951,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const payload = {
       exportedAt: nowISO(),
       app: "SwiftReader",
-      version: 2,
+      version: CURRENT_SCHEMA_VERSION,
       settings: state.settings,
       reader: state.reader,
       books,
@@ -3565,7 +3959,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       notes
     };
 
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const serialized = safeStringifyJSON(payload, "export data");
+    if (!serialized) return;
+    const blob = new Blob([serialized], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -3585,17 +3981,18 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const file = input.files?.[0];
       if (!file) return;
       const text = await fileToTextAsync(file);
-      const parsed = safeJsonParse(text, null);
+      const parsed = safeParseJSON(text, null, "import file");
       if (!parsed || typeof parsed !== "object") {
         showToast({ title: "Invalid file", message: "This JSON file could not be read.", type: "error" });
         return;
       }
       const imported = parsed.state ? parsed.state : parsed;
-      const incomingBooks = Array.isArray(imported.books || imported.library?.books) ? (imported.books || imported.library.books) : [];
-      const incomingNotes = Array.isArray(imported.notes) ? imported.notes : [];
+      const migratedImport = migrateState(imported);
+      const incomingBooks = Array.isArray(migratedImport.library?.books) ? migratedImport.library.books : [];
+      const incomingNotes = Array.isArray(migratedImport.notes) ? migratedImport.notes : [];
       const incomingContents = Array.isArray(imported.contents) ? imported.contents : [];
-      const incomingSettings = imported.settings || imported.state?.settings;
-      const incomingReader = imported.reader || imported.state?.reader;
+      const incomingSettings = migratedImport.settings || imported.settings || imported.state?.settings;
+      const incomingReader = migratedImport.reader || imported.reader || imported.state?.reader;
 
       if (!incomingBooks.length && !incomingNotes.length && !incomingContents.length) {
         showToast({ title: "No data found", message: "Import file does not contain library data.", type: "error" });
@@ -3620,6 +4017,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       if (incomingReader) {
         state.reader = { ...state.reader, ...incomingReader };
       }
+      if (migratedImport.lastOpenedBookId) {
+        state.lastOpenedBookId = migratedImport.lastOpenedBookId;
+        state.library.lastOpenedBookId = migratedImport.lastOpenedBookId;
+      }
 
       if (incomingBooks.length) {
         const normalized = incomingBooks.map(b => normalizeBook(b));
@@ -3633,11 +4034,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
 
       if (incomingNotes.length) {
+        const normalizedNotes = incomingNotes.map(n => normalizeNote(n));
         if (replace) {
-          state.notes = incomingNotes;
+          state.notes = normalizedNotes;
         } else {
           const existing = new Map(state.notes.map(n => [n.id, n]));
-          incomingNotes.forEach(n => existing.set(n.id, n));
+          normalizedNotes.forEach(n => existing.set(n.id, n));
           state.notes = Array.from(existing.values());
         }
       }
@@ -3706,6 +4108,87 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     } else {
       console.info("SwiftReader smoke check: ok");
     }
+  }
+
+  function runSmokeTestSuite() {
+    const results = [];
+    const record = (name, pass, detail) => {
+      results.push({ name, pass, detail });
+    };
+
+    try {
+      const pendingBefore = pendingMigrationWrite;
+      loadState();
+      pendingMigrationWrite = pendingBefore;
+      record("state-load", true);
+    } catch (err) {
+      record("state-load", false, err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+      const legacy = {
+        books: [{ title: "Legacy Book", text: "Hello world", sourceType: "txt" }],
+        notes: [{ text: "Legacy note", bookId: "legacy" }]
+      };
+      const pendingBefore = pendingMigrationWrite;
+      const migrated = migrateState(legacy);
+      pendingMigrationWrite = pendingBefore;
+      const ok = migrated.version === CURRENT_SCHEMA_VERSION && Array.isArray(migrated.library.books);
+      record("migration", ok, ok ? null : "Migration did not reach current schema");
+    } catch (err) {
+      record("migration", false, err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+      const pages = [
+        {
+          pageIndex: 1,
+          pageHeight: 800,
+          lines: [
+            { pageIndex: 1, pageHeight: 800, y: 780, text: "Running Title" },
+            { pageIndex: 1, pageHeight: 800, y: 20, text: "1" },
+            { pageIndex: 1, pageHeight: 800, y: 400, text: "Body text line" }
+          ]
+        },
+        {
+          pageIndex: 2,
+          pageHeight: 800,
+          lines: [
+            { pageIndex: 2, pageHeight: 800, y: 780, text: "Running Title" },
+            { pageIndex: 2, pageHeight: 800, y: 20, text: "2" },
+            { pageIndex: 2, pageHeight: 800, y: 400, text: "More body text" }
+          ]
+        }
+      ];
+      const stripped = stripPdfHeadersFooters(pages, { enabled: true, customPhrases: [] });
+      const ok = stripped.pageTexts.every(text => !/Running Title/.test(text));
+      record("pdf-strip", ok, ok ? null : "Headers not stripped");
+    } catch (err) {
+      record("pdf-strip", false, err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+      const payload = {
+        app: "SwiftReader",
+        version: CURRENT_SCHEMA_VERSION,
+        settings: state.settings,
+        books: [normalizeBook({ title: "Round Trip", text: "Hello" })],
+        notes: [normalizeNote({ text: "Note", bookId: "x" })]
+      };
+      const serialized = safeStringifyJSON(payload, "smoke export");
+      const parsed = safeParseJSON(serialized, null, "smoke import");
+      const ok = !!parsed && Array.isArray(parsed.books);
+      record("import-export", ok, ok ? null : "Round trip failed");
+    } catch (err) {
+      record("import-export", false, err instanceof Error ? err.message : String(err));
+    }
+
+    const summary = results.reduce((acc, res) => {
+      acc[res.pass ? "passed" : "failed"].push(res);
+      return acc;
+    }, { passed: [], failed: [] });
+    console.info("SwiftReader smoke tests", summary);
+    return { results, summary };
   }
 
   function logBootStatus() {
@@ -3797,6 +4280,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
     };
   }
+
+  window.swiftreaderDebug = window.swiftreaderDebug || {};
+  window.swiftreaderDebug.runSmokeTests = () => runSmokeTestSuite();
 
   /* ---------------------------
      Render all views
