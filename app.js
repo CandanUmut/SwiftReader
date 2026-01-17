@@ -169,6 +169,12 @@
     return t.trim();
   }
 
+  function cloneArrayBuffer(buffer) {
+    if (!(buffer instanceof ArrayBuffer)) return buffer;
+    if (buffer.byteLength === 0) return new ArrayBuffer(0);
+    return buffer.slice(0);
+  }
+
   function estimateReadMinutes(wordCount, wpm = 300) {
     if (!wordCount || !wpm) return 0;
     return Math.max(1, Math.ceil(wordCount / wpm));
@@ -797,13 +803,17 @@
     if (!idbReady) return;
     wordIndexCache.delete(bookId);
     pageMapCache.delete(bookId);
+    const safeExtras = {
+      ...extra,
+      fileData: extra?.fileData instanceof ArrayBuffer ? cloneArrayBuffer(extra.fileData) : extra?.fileData
+    };
     const payload = {
       bookId,
       rawText: rawText || "",
       tokens: Array.isArray(tokens) ? tokens : [],
       tokenCount: Array.isArray(tokens) ? tokens.length : 0,
       updatedAt: nowISO(),
-      ...extra
+      ...safeExtras
     };
     await idbPut(DB_STORES.contents, payload);
     contentCache.set(bookId, payload);
@@ -2354,6 +2364,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       throw new Error("epub.js not available");
     }
     const buffer = await file.arrayBuffer();
+    const fileData = cloneArrayBuffer(buffer);
     const book = epubLib(buffer);
     await book.ready;
     const metadata = await book.loaded.metadata;
@@ -2375,7 +2386,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return {
       title: metadata?.title || "",
       text: chunks.join("\n\n"),
-      fileData: buffer
+      fileData
     };
   }
   async function parseImportFile(file, index, total) {
