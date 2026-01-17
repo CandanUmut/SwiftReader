@@ -2319,6 +2319,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
     const buffer = await file.arrayBuffer();
+    const fileData = buffer.slice(0);
     const loadingTask = pdfjsLib.getDocument({ data: buffer });
     const pdf = await loadingTask.promise;
     const totalPages = pdf.numPages || 0;
@@ -2344,7 +2345,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (totalPages > 1 && combined.trim().length < 300) {
       onStatus?.("Scanned PDF detected.");
     }
-    return { pages, text: combined, totalPages, fileData: buffer };
+    return { pages, text: combined, totalPages, fileData };
   }
 
   async function extractTextFromEpub(file, onStatus) {
