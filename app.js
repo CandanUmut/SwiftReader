@@ -16,6 +16,10 @@
   --------------------------- */
   const APP_VERSION = "2.0.0";
   console.info(`SwiftReader loaded v${APP_VERSION}`);
+  const diagnostics = {
+    storage: false,
+    pdfUpload: false
+  };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const safeQuery = (sel, root = document) => {
@@ -36,6 +40,24 @@
     }
     el.addEventListener(event, handler);
     return true;
+  }
+
+  function setButtonLoading(btn, isLoading, label = "Importing…") {
+    if (!btn) return;
+    if (!btn.dataset.originalLabel) {
+      btn.dataset.originalLabel = btn.textContent || "";
+    }
+    if (isLoading) {
+      btn.classList.add("is-loading");
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      btn.textContent = label;
+    } else {
+      btn.classList.remove("is-loading");
+      btn.disabled = false;
+      btn.removeAttribute("aria-busy");
+      btn.textContent = btn.dataset.originalLabel;
+    }
   }
 
   const bootToasts = [];
@@ -63,7 +85,10 @@
         type: "error",
         duration: 7000,
         actions: [
-          { label: "Export raw storage", handler: () => exportRawStorage() }
+          { label: "Export raw storage", handler: () => exportRawStorage() },
+          ...(contextLabel === "local storage"
+            ? [{ label: "Repair storage", handler: () => repairStorage() }]
+            : [])
         ]
       };
       if (globalThis.__swiftreaderToastReady) {
@@ -88,6 +113,28 @@
       });
       return null;
     }
+  }
+
+  function summarizeStateShape(payload) {
+    const books = payload?.library?.books;
+    const notes = payload?.notes;
+    return {
+      version: payload?.version ?? null,
+      booksIsArray: Array.isArray(books),
+      booksCount: Array.isArray(books) ? books.length : 0,
+      notesIsArray: Array.isArray(notes),
+      notesCount: Array.isArray(notes) ? notes.length : 0
+    };
+  }
+
+  function logStorageDiagnostic(event, payload = {}) {
+    if (!diagnostics.storage) return;
+    console.info("[SwiftReader][storage]", event, payload);
+  }
+
+  function logPdfDiagnostic(event, payload = {}) {
+    if (!diagnostics.pdfUpload) return;
+    console.info("[SwiftReader][pdf]", event, payload);
   }
 
   function uid(prefix = "id") {
@@ -435,6 +482,10 @@
       const reader = source?.reader || source?.state?.reader || {};
       const lastOpenedBookId = source?.lastOpenedBookId ?? source?.library?.lastOpenedBookId ?? null;
 
+      const normalizedBooks = books
+        .map(b => (b && typeof b === "object" ? normalizeBook(b) : null))
+        .filter(Boolean);
+
       const migrated = {
         ...base,
         ...source,
@@ -446,7 +497,7 @@
         library: {
           ...base.library,
           ...(source?.library || {}),
-          books: books.map(b => normalizeBook(b)),
+          books: normalizedBooks,
           lastOpenedBookId
         },
         notes: notes.map(n => normalizeNote(n)),
@@ -477,11 +528,28 @@
   }
 
   function loadState() {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return defaultState();
-    const parsed = safeParseJSON(raw, null, "local storage");
-    if (!parsed || typeof parsed !== "object") return defaultState();
-    return migrateState(parsed);
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      logStorageDiagnostic("READ", {
+        key: STORE_KEY,
+        length: raw ? raw.length : 0
+      });
+      if (!raw) return defaultState();
+      const parsed = safeParseJSON(raw, null, "local storage");
+      if (!parsed || typeof parsed !== "object") return defaultState();
+      const migrated = migrateState(parsed);
+      logStorageDiagnostic("READ_OK", summarizeStateShape(migrated));
+      return migrated;
+    } catch (err) {
+      console.warn("SwiftReader loadState failed", err);
+      showToast({
+        title: "Data load failed",
+        message: "SwiftReader couldn't read storage. Loading defaults instead.",
+        type: "error",
+        duration: 7000
+      });
+      return defaultState();
+    }
   }
 
   function serializeStateForStorage() {
@@ -501,13 +569,41 @@
   }
 
   function saveState() {
-    state.updatedAt = Date.now();
-    const toStore = serializeStateForStorage();
-    const serialized = safeStringifyJSON(toStore, "local storage");
-    if (!serialized) return;
-    localStorage.setItem(STORE_KEY, serialized);
-    updateStorageEstimate();
-    void persistSettingsToIdb();
+    try {
+      state.updatedAt = Date.now();
+      if (!Array.isArray(state.library?.books)) state.library.books = [];
+      if (!Array.isArray(state.notes)) state.notes = [];
+      const toStore = serializeStateForStorage();
+      const serialized = safeStringifyJSON(toStore, "local storage");
+      if (!serialized) return;
+      logStorageDiagnostic("WRITE", {
+        key: STORE_KEY,
+        length: serialized.length,
+        summary: summarizeStateShape(toStore)
+      });
+      try {
+        localStorage.setItem(STORE_KEY, serialized);
+      } catch (err) {
+        console.error("SwiftReader storage write failed", err);
+        showToast({
+          title: "Data save failed",
+          message: "Unable to write to local storage. Your previous data is unchanged.",
+          type: "error",
+          duration: 7000
+        });
+        return;
+      }
+      updateStorageEstimate();
+      void persistSettingsToIdb();
+    } catch (err) {
+      console.error("SwiftReader saveState failed", err);
+      showToast({
+        title: "Data save failed",
+        message: "Unexpected error while saving.",
+        type: "error",
+        duration: 7000
+      });
+    }
   }
 
   function exportRawStorage() {
@@ -529,6 +625,43 @@
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  }
+
+  function repairStorage() {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) {
+      showToast({ title: "No storage data", message: "Nothing to repair yet.", type: "info" });
+      return false;
+    }
+    const parsed = safeParseJSON(raw, null, "local storage");
+    if (!parsed || typeof parsed !== "object") {
+      showToast({
+        title: "Repair failed",
+        message: "Storage data could not be parsed. Export raw data for backup.",
+        type: "error",
+        duration: 7000
+      });
+      return false;
+    }
+    const migrated = migrateState(parsed);
+    const serialized = safeStringifyJSON(migrated, "repaired storage");
+    if (!serialized) return false;
+    try {
+      localStorage.setItem(STORE_KEY, serialized);
+    } catch (err) {
+      console.error("SwiftReader repair write failed", err);
+      showToast({
+        title: "Repair failed",
+        message: "Unable to write repaired data to storage.",
+        type: "error",
+        duration: 7000
+      });
+      return false;
+    }
+    state = migrateState(migrated);
+    renderAll();
+    showToast({ title: "Storage repaired", message: "Recovered data has been re-saved.", type: "success" });
+    return true;
   }
 
   function normalizeBook(b) {
@@ -800,6 +933,7 @@
 
   const exportBtn = $("#export-btn");
   const importDataBtn = $("#import-data-btn");
+  const repairStorageBtn = $("#repair-storage-btn");
 
   // Reader view elements
   const openLibraryBtn = $("#open-library-btn");
@@ -1205,68 +1339,85 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }, "#demo-load-btn");
 
     on(importConfirmBtn, "click", async () => {
-      const author = (importAuthor.value || "").trim();
-      const tags = (importTags.value || "")
-        .split(",")
-        .map(s => s.trim())
-        .filter(Boolean);
+      setButtonLoading(importConfirmBtn, true, "Importing…");
+      try {
+        const author = (importAuthor.value || "").trim();
+        const tags = (importTags.value || "")
+          .split(",")
+          .map(s => s.trim())
+          .filter(Boolean);
 
-      const bufferItems = Array.isArray(importBuffer.items) ? importBuffer.items : [];
-      const hasItems = bufferItems.length > 0;
-      if (!hasItems && !importBuffer.text) {
-        // No file selected? Let user still add from file panel if they filled nothing.
-        setImportStatus("Please choose a file or load demo text first.");
-        showToast({ title: "Add text first", message: "Choose a file or load the demo text.", type: "error" });
-        return;
-      }
-      if (bufferItems.length > 1) {
-        const created = [];
-        for (const item of bufferItems) {
-          const book = await createBookFromText({
-            title: item.suggestedTitle || "Untitled",
-            author,
-            tags,
-            text: item.text,
-            sourceType: item.sourceType || "paste",
-            contentExtras: item.contentExtras,
-            tokens: item.tokens,
-            wordCount: item.wordCount,
-            sourceMeta: item.sourceMeta
-          });
-          upsertBook(book);
-          created.push(book);
+        const bufferItems = Array.isArray(importBuffer.items) ? importBuffer.items : [];
+        const hasItems = bufferItems.length > 0;
+        if (!hasItems && !importBuffer.text) {
+          // No file selected? Let user still add from file panel if they filled nothing.
+          setImportStatus("Please choose a file or load demo text first.");
+          showToast({ title: "Add text first", message: "Choose a file or load the demo text.", type: "error" });
+          return;
+        }
+        if (bufferItems.length > 1) {
+          const created = [];
+          for (const item of bufferItems) {
+            const book = await createBookFromText({
+              title: item.suggestedTitle || "Untitled",
+              author,
+              tags,
+              text: item.text,
+              sourceType: item.sourceType || "paste",
+              contentExtras: item.contentExtras,
+              tokens: item.tokens,
+              wordCount: item.wordCount,
+              sourceMeta: item.sourceMeta
+            });
+            if (book?.sourceType === "pdf") {
+              logPdfDiagnostic("PDF_BEFORE_SAVE_BOOK", { keys: Object.keys(book) });
+            }
+            upsertBook(book);
+            if (book?.sourceType === "pdf") {
+              logPdfDiagnostic("PDF_AFTER_SAVE_OK", { bookId: book.id });
+            }
+            created.push(book);
+          }
+          clearFileImportUI();
+          const lastBook = created[created.length - 1];
+          if (lastBook) {
+            await openBookInReader(lastBook.id);
+            setView("reader");
+          }
+          showToast({ title: "Books added", message: `${created.length} files imported.`, type: "success" });
+          return;
+        }
+
+        const item = bufferItems[0];
+        const title = (importTitle.value || item?.suggestedTitle || importBuffer.suggestedTitle || "Untitled").trim() || "Untitled";
+        const book = await createBookFromText({
+          title,
+          author,
+          tags,
+          text: item?.text || importBuffer.text,
+          sourceType: item?.sourceType || importBuffer.sourceType || "paste",
+          contentExtras: item?.contentExtras,
+          tokens: item?.tokens,
+          wordCount: item?.wordCount,
+          sourceMeta: item?.sourceMeta
+        });
+
+        if (book?.sourceType === "pdf") {
+          logPdfDiagnostic("PDF_BEFORE_SAVE_BOOK", { keys: Object.keys(book) });
+        }
+        upsertBook(book);
+        if (book?.sourceType === "pdf") {
+          logPdfDiagnostic("PDF_AFTER_SAVE_OK", { bookId: book.id });
         }
         clearFileImportUI();
-        const lastBook = created[created.length - 1];
-        if (lastBook) {
-          await openBookInReader(lastBook.id);
-          setView("reader");
-        }
-        showToast({ title: "Books added", message: `${created.length} files imported.`, type: "success" });
-        return;
+
+        // Auto-open in reader
+        await openBookInReader(book.id);
+        setView("reader");
+        showToast({ title: "Book added", message: "Ready to read.", type: "success" });
+      } finally {
+        setButtonLoading(importConfirmBtn, false);
       }
-
-      const item = bufferItems[0];
-      const title = (importTitle.value || item?.suggestedTitle || importBuffer.suggestedTitle || "Untitled").trim() || "Untitled";
-      const book = await createBookFromText({
-        title,
-        author,
-        tags,
-        text: item?.text || importBuffer.text,
-        sourceType: item?.sourceType || importBuffer.sourceType || "paste",
-        contentExtras: item?.contentExtras,
-        tokens: item?.tokens,
-        wordCount: item?.wordCount,
-        sourceMeta: item?.sourceMeta
-      });
-
-      upsertBook(book);
-      clearFileImportUI();
-
-      // Auto-open in reader
-      await openBookInReader(book.id);
-      setView("reader");
-      showToast({ title: "Book added", message: "Ready to read.", type: "success" });
     }, "#import-confirm-btn");
 
     on(importClearBtn, "click", () => clearFileImportUI(), "#import-clear-btn");
@@ -1336,7 +1487,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     // Sidebar export/import
     on(exportBtn, "click", () => void exportData(), "#export-btn");
-    on(importDataBtn, "click", () => importData(), "#import-data-btn");
+    on(importDataBtn, "click", () => importData(importDataBtn), "#import-data-btn");
 
     // Reader controls
     on(btnPlay, "click", () => togglePlay(), "#btn-play");
@@ -1600,7 +1751,19 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     // Export/import from settings too
     on(settingsExportBtn, "click", () => void exportData(), "#settings-export-btn");
-    on(settingsImportBtn, "click", () => importData(), "#settings-import-btn");
+    on(settingsImportBtn, "click", () => importData(settingsImportBtn), "#settings-import-btn");
+    on(repairStorageBtn, "click", () => {
+      showToast({
+        title: "Repair storage",
+        message: "Export raw storage before repairing (recommended).",
+        type: "info",
+        duration: 8000,
+        actions: [
+          { label: "Export raw storage", handler: () => exportRawStorage() },
+          { label: "Repair now", handler: () => repairStorage() }
+        ]
+      });
+    }, "#repair-storage-btn");
 
     on(settingsResetBtn, "click", () => dangerResetBtn?.click(), "#settings-reset-btn");
 
@@ -2241,6 +2404,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (lower.endsWith(".pdf")) {
       const baseTitle = name.replace(/\.pdf$/i, "");
+      logPdfDiagnostic("PDF_UPLOAD_START", {
+        filename: name,
+        size: file.size || null,
+        type: file.type || "application/pdf"
+      });
       try {
         const result = await extractTextFromPdf(file, status => setImportStatus(status));
         const text = result?.text || "";
@@ -3973,115 +4141,123 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     showToast({ title: "Export ready", message: "Your data download has started.", type: "success" });
   }
 
-  function importData() {
+  function importData(triggerBtn) {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".json,application/json";
     input.addEventListener("change", async () => {
+      setButtonLoading(triggerBtn, true, "Importing…");
       const file = input.files?.[0];
-      if (!file) return;
-      const text = await fileToTextAsync(file);
-      const parsed = safeParseJSON(text, null, "import file");
-      if (!parsed || typeof parsed !== "object") {
-        showToast({ title: "Invalid file", message: "This JSON file could not be read.", type: "error" });
+      if (!file) {
+        setButtonLoading(triggerBtn, false);
         return;
       }
-      const imported = parsed.state ? parsed.state : parsed;
-      const migratedImport = migrateState(imported);
-      const incomingBooks = Array.isArray(migratedImport.library?.books) ? migratedImport.library.books : [];
-      const incomingNotes = Array.isArray(migratedImport.notes) ? migratedImport.notes : [];
-      const incomingContents = Array.isArray(imported.contents) ? imported.contents : [];
-      const incomingSettings = migratedImport.settings || imported.settings || imported.state?.settings;
-      const incomingReader = migratedImport.reader || imported.reader || imported.state?.reader;
+      try {
+        const text = await fileToTextAsync(file);
+        const parsed = safeParseJSON(text, null, "import file");
+        if (!parsed || typeof parsed !== "object") {
+          showToast({ title: "Invalid file", message: "This JSON file could not be read.", type: "error" });
+          return;
+        }
+        const imported = parsed.state ? parsed.state : parsed;
+        const migratedImport = migrateState(imported);
+        const incomingBooks = Array.isArray(migratedImport.library?.books) ? migratedImport.library.books : [];
+        const incomingNotes = Array.isArray(migratedImport.notes) ? migratedImport.notes : [];
+        const incomingContents = Array.isArray(imported.contents) ? imported.contents : [];
+        const incomingSettings = migratedImport.settings || imported.settings || imported.state?.settings;
+        const incomingReader = migratedImport.reader || imported.reader || imported.state?.reader;
 
-      if (!incomingBooks.length && !incomingNotes.length && !incomingContents.length) {
-        showToast({ title: "No data found", message: "Import file does not contain library data.", type: "error" });
-        return;
-      }
+        if (!incomingBooks.length && !incomingNotes.length && !incomingContents.length) {
+          showToast({ title: "No data found", message: "Import file does not contain library data.", type: "error" });
+          return;
+        }
 
-      const replace = await openConfirm({
-        title: "Import data",
-        message: "Replace current library with imported data? Choose Cancel to merge instead.",
-        confirmText: "Replace data",
-        cancelText: "Merge instead"
-      });
+        const replace = await openConfirm({
+          title: "Import data",
+          message: "Replace current library with imported data? Choose Cancel to merge instead.",
+          confirmText: "Replace data",
+          cancelText: "Merge instead"
+        });
 
-      if (replace) {
-        state = defaultState();
-        await resetIndexedDb();
-      }
-
-      if (incomingSettings) {
-        state.settings = { ...state.settings, ...incomingSettings };
-      }
-      if (incomingReader) {
-        state.reader = { ...state.reader, ...incomingReader };
-      }
-      if (migratedImport.lastOpenedBookId) {
-        state.lastOpenedBookId = migratedImport.lastOpenedBookId;
-        state.library.lastOpenedBookId = migratedImport.lastOpenedBookId;
-      }
-
-      if (incomingBooks.length) {
-        const normalized = incomingBooks.map(b => normalizeBook(b));
         if (replace) {
-          state.library.books = normalized;
-        } else {
-          const existing = new Map(state.library.books.map(b => [b.id, b]));
-          normalized.forEach(b => existing.set(b.id, b));
-          state.library.books = Array.from(existing.values());
+          state = defaultState();
+          await resetIndexedDb();
         }
-      }
 
-      if (incomingNotes.length) {
-        const normalizedNotes = incomingNotes.map(n => normalizeNote(n));
-        if (replace) {
-          state.notes = normalizedNotes;
-        } else {
-          const existing = new Map(state.notes.map(n => [n.id, n]));
-          normalizedNotes.forEach(n => existing.set(n.id, n));
-          state.notes = Array.from(existing.values());
+        if (incomingSettings) {
+          state.settings = { ...state.settings, ...incomingSettings };
         }
-      }
-
-      for (const book of state.library.books) {
-        await persistBookMetadataToIdb(book.id);
-      }
-
-      if (incomingContents.length) {
-        for (const content of incomingContents) {
-          const entry = {
-            bookId: content.bookId,
-            rawText: content.rawText || "",
-            tokens: Array.isArray(content.tokens) ? content.tokens : [],
-            tokenCount: typeof content.tokenCount === "number" ? content.tokenCount : (content.tokens || []).length,
-            updatedAt: content.updatedAt || nowISO(),
-            pageRanges: Array.isArray(content.pageRanges) ? content.pageRanges : [],
-            fileData: content.fileData || null,
-            fileType: content.fileType || null,
-            pdfTotalPages: typeof content.pdfTotalPages === "number" ? content.pdfTotalPages : null
-          };
-          await idbPut(DB_STORES.contents, entry);
-          contentCache.set(content.bookId, entry);
+        if (incomingReader) {
+          state.reader = { ...state.reader, ...incomingReader };
         }
+        if (migratedImport.lastOpenedBookId) {
+          state.lastOpenedBookId = migratedImport.lastOpenedBookId;
+          state.library.lastOpenedBookId = migratedImport.lastOpenedBookId;
+        }
+
+        if (incomingBooks.length) {
+          const normalized = incomingBooks.map(b => normalizeBook(b));
+          if (replace) {
+            state.library.books = normalized;
+          } else {
+            const existing = new Map(state.library.books.map(b => [b.id, b]));
+            normalized.forEach(b => existing.set(b.id, b));
+            state.library.books = Array.from(existing.values());
+          }
+        }
+
+        if (incomingNotes.length) {
+          const normalizedNotes = incomingNotes.map(n => normalizeNote(n));
+          if (replace) {
+            state.notes = normalizedNotes;
+          } else {
+            const existing = new Map(state.notes.map(n => [n.id, n]));
+            normalizedNotes.forEach(n => existing.set(n.id, n));
+            state.notes = Array.from(existing.values());
+          }
+        }
+
+        for (const book of state.library.books) {
+          await persistBookMetadataToIdb(book.id);
+        }
+
+        if (incomingContents.length) {
+          for (const content of incomingContents) {
+            const entry = {
+              bookId: content.bookId,
+              rawText: content.rawText || "",
+              tokens: Array.isArray(content.tokens) ? content.tokens : [],
+              tokenCount: typeof content.tokenCount === "number" ? content.tokenCount : (content.tokens || []).length,
+              updatedAt: content.updatedAt || nowISO(),
+              pageRanges: Array.isArray(content.pageRanges) ? content.pageRanges : [],
+              fileData: content.fileData || null,
+              fileType: content.fileType || null,
+              pdfTotalPages: typeof content.pdfTotalPages === "number" ? content.pdfTotalPages : null
+            };
+            await idbPut(DB_STORES.contents, entry);
+            contentCache.set(content.bookId, entry);
+          }
+        }
+
+        for (const note of state.notes) {
+          await idbPut(DB_STORES.notes, note);
+        }
+
+        state.storage.migratedToIdb = true;
+        state.storage.migratedAt = nowISO();
+        saveState();
+
+        stopReader(true);
+        selectedBookId = null;
+        selectedNoteId = null;
+        applyThemeFromSettings();
+        applyReaderStyleSettings();
+        hydrateSettingsUI();
+        renderAll();
+        showToast({ title: "Import completed", message: replace ? "Library replaced." : "Library merged.", type: "success" });
+      } finally {
+        setButtonLoading(triggerBtn, false);
       }
-
-      for (const note of state.notes) {
-        await idbPut(DB_STORES.notes, note);
-      }
-
-      state.storage.migratedToIdb = true;
-      state.storage.migratedAt = nowISO();
-      saveState();
-
-      stopReader(true);
-      selectedBookId = null;
-      selectedNoteId = null;
-      applyThemeFromSettings();
-      applyReaderStyleSettings();
-      hydrateSettingsUI();
-      renderAll();
-      showToast({ title: "Import completed", message: replace ? "Library replaced." : "Library merged.", type: "success" });
     });
     input.click();
   }
@@ -4283,6 +4459,20 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
   window.swiftreaderDebug = window.swiftreaderDebug || {};
   window.swiftreaderDebug.runSmokeTests = () => runSmokeTestSuite();
+  window.swiftreaderDebug.dumpStateSummary = () => summarizeStateShape(state);
+  window.swiftreaderDebug.testSerializeState = () => {
+    const serialized = safeStringifyJSON(serializeStateForStorage(), "debug serialize");
+    return {
+      ok: !!serialized,
+      length: serialized ? serialized.length : 0
+    };
+  };
+  window.swiftreaderDebug.simulateMigration = (sample) => migrateState(sample);
+  window.swiftreaderDebug.enableDiagnostics = ({ storage = false, pdfUpload = false } = {}) => {
+    diagnostics.storage = !!storage;
+    diagnostics.pdfUpload = !!pdfUpload;
+    return { ...diagnostics };
+  };
 
   /* ---------------------------
      Render all views
