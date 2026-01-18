@@ -2545,44 +2545,54 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
     const buffer = await file.arrayBuffer();
     const fileData = cloneArrayBuffer(buffer);
-    const book = epubLib(buffer);
-    await book.ready;
-    const metadata = await book.loaded.metadata;
-    await book.loaded.spine;
-    const sections = book.spine?.spineItems || book.spine?.items || [];
-    const chunks = [];
+    let book = null;
+    try {
+      book = epubLib(buffer);
+      await book.ready;
+      const metadata = await book.loaded.metadata;
+      await book.loaded.spine;
+      const sections = book.spine?.spineItems || book.spine?.items || [];
+      const chunks = [];
 
-    for (let i = 0; i < sections.length; i += 1) {
-      const section = sections[i];
-      onStatus?.(`Extracting EPUB… ${i + 1} / ${sections.length}`);
-      let contents = null;
-      try {
-        if (section?.load && typeof section.load === "function") {
-          contents = await section.load(book.load.bind(book));
-        } else if (section?.href) {
-          contents = await book.load(section.href);
-        } else if (book.spine?.get && section?.idref) {
-          const resolved = book.spine.get(section.idref);
-          if (resolved?.load) {
-            contents = await resolved.load(book.load.bind(book));
+      for (let i = 0; i < sections.length; i += 1) {
+        const section = sections[i];
+        onStatus?.(`Extracting EPUB… ${i + 1} / ${sections.length}`);
+        let contents = null;
+        try {
+          if (section?.load && typeof section.load === "function") {
+            contents = await section.load(book.load.bind(book));
+          } else if (section?.href) {
+            contents = await book.load(section.href);
+          } else if (book.spine?.get && section?.idref) {
+            const resolved = book.spine.get(section.idref);
+            if (resolved?.load) {
+              contents = await resolved.load(book.load.bind(book));
+            }
           }
+        } catch (err) {
+          console.warn("EPUB section load failed", err);
         }
-      } catch (err) {
-        console.warn("EPUB section load failed", err);
+        const doc = contents?.document || contents;
+        const bodyText = doc?.body ? doc.body.textContent : "";
+        if (bodyText) chunks.push(sanitizeExtractedText(bodyText));
+        if (section?.unload) section.unload();
+        if (contents?.unload) contents.unload();
+        await sleep(0);
       }
-      const doc = contents?.document || contents;
-      const bodyText = doc?.body ? doc.body.textContent : "";
-      if (bodyText) chunks.push(sanitizeExtractedText(bodyText));
-      if (section?.unload) section.unload();
-      if (contents?.unload) contents.unload();
-      await sleep(0);
-    }
 
-    return {
-      title: metadata?.title || "",
-      text: chunks.join("\n\n"),
-      fileData
-    };
+      return {
+        title: metadata?.title || "",
+        text: chunks.join("\n\n"),
+        fileData
+      };
+    } catch (err) {
+      console.warn("EPUB text extraction failed", err);
+      return { title: "", text: "", fileData };
+    } finally {
+      if (book?.destroy) {
+        book.destroy();
+      }
+    }
   }
   async function parseImportFile(file, index, total) {
     const name = file.name || "Untitled";
@@ -2672,9 +2682,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
       const { text, title, fileData } = await extractTextFromEpub(file, status => setImportStatus(status));
       if (!text || text.length < 40) {
-        setImportStatus("No readable text found in EPUB.");
-        showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
-        return null;
+        if (!fileData) {
+          setImportStatus("No readable text found in EPUB.");
+          showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
+          return null;
+        }
+        setImportStatus("EPUB text extraction failed.");
+        showToast({
+          title: "Limited EPUB import",
+          message: "Text extraction failed, but the EPUB viewer should still work.",
+          type: "warning"
+        });
       }
       return {
         file,
