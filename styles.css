@@ -950,6 +950,7 @@ button, input, textarea, select {
   padding: 12px;
   background: color-mix(in srgb, var(--card2) 92%, transparent);
   min-height: 260px;
+  position: relative;
 }
 
 .pdf-viewer,
@@ -970,6 +971,36 @@ button, input, textarea, select {
 
 .pdf-viewer.is-dragging {
   cursor: grabbing;
+}
+
+.pdf-overlay-controls {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: calc(12px + env(safe-area-inset-left));
+  padding-right: calc(12px + env(safe-area-inset-right));
+  pointer-events: none;
+  z-index: 2;
+}
+
+.pdf-viewer[hidden] ~ .pdf-overlay-controls {
+  display: none;
+}
+
+.pdf-overlay-btn {
+  pointer-events: auto;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 85%, transparent);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
+.pdf-overlay-btn:disabled {
+  opacity: 0.4;
+  box-shadow: none;
 }
 
 .pdf-canvas-wrap {
@@ -997,7 +1028,7 @@ button, input, textarea, select {
 
 .reader-page:fullscreen .pdf-viewer {
   max-height: none;
-  height: 70vh;
+  height: calc(100vh - 160px);
 }
 
 /* Pseudo-fullscreen for mobile browsers that block the Fullscreen API. */
@@ -1029,7 +1060,7 @@ body.viewer-fullscreen .reader-page {
 body.viewer-fullscreen .viewer-stage,
 body.viewer-fullscreen .pdf-viewer {
   max-height: none;
-  height: calc(100vh - 220px);
+  height: calc(100vh - 160px);
 }
 
 .epub-viewer {
