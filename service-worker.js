@@ -1,9 +1,11 @@
-const CACHE_NAME = "swiftreader-shell-v2";
+const CACHE_NAME = "swiftreader-shell-v3";
 const SHELL_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./vendor/jszip.min.js",
+  "./vendor/epub.min.js",
   "./manifest.json",
   "./favicon.ico"
 ];

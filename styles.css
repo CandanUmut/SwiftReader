@@ -950,10 +950,22 @@ button, input, textarea, select {
 }
 
 .pdf-viewer {
-  display: grid;
-  place-items: center;
+  display: block;
+  position: relative;
   max-height: 75vh;
-  overflow: auto;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
+.pdf-viewer.is-dragging {
+  cursor: grabbing;
+}
+
+.pdf-canvas-wrap {
+  display: inline-block;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .pdf-canvas {
@@ -962,6 +974,21 @@ button, input, textarea, select {
   max-width: none;
   border-radius: 12px;
   background: var(--card);
+}
+
+.reader-page:fullscreen {
+  background: var(--bg);
+  padding: 18px;
+  overflow: auto;
+}
+
+.reader-page:fullscreen .viewer-stage {
+  max-height: none;
+}
+
+.reader-page:fullscreen .pdf-viewer {
+  max-height: none;
+  height: 70vh;
 }
 
 .epub-viewer {
