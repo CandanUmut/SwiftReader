@@ -955,8 +955,6 @@
   const pageProgress = $("#page-progress");
   const progressSlider = $("#progress-slider");
   const progressLabel = $("#progress-label");
-  const togglePageBtn = $("#toggle-page");
-  const toggleRsvpBtn = $("#toggle-rsvp");
   const documentViewer = $("#document-viewer");
   const viewerStatus = $("#viewer-status");
   const pdfViewer = $("#pdf-viewer");
@@ -1189,9 +1187,6 @@
         setView(view);
       }, `nav:${btn.id || btn.dataset.view || "item"}`);
     });
-
-    on(togglePageBtn, "click", () => setReaderMode("page"), "#toggle-page");
-    on(toggleRsvpBtn, "click", () => setReaderMode("rsvp"), "#toggle-rsvp");
 
     on(pageView, "click", (event) => {
       if (!selectedBookId) return;
@@ -3200,10 +3195,6 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (!["page", "rsvp"].includes(mode)) return;
     const readerView = $("#view-reader");
     if (readerView) readerView.dataset.readerMode = mode;
-    togglePageBtn?.classList.toggle("is-active", mode === "page");
-    toggleRsvpBtn?.classList.toggle("is-active", mode === "rsvp");
-    togglePageBtn?.setAttribute("aria-selected", mode === "page" ? "true" : "false");
-    toggleRsvpBtn?.setAttribute("aria-selected", mode === "rsvp" ? "true" : "false");
     if (persist) {
       state.settings.readerMode = mode;
       saveState();

@@ -816,13 +816,13 @@ button, input, textarea, select {
 .reader-shell {
   display: flex;
   flex-direction: column;
-  gap: var(--gap2);
+  gap: calc(var(--gap2) + 8px);
 }
 
 .reader-main {
   display: grid;
   grid-template-columns: 1fr;
-  gap: var(--gap2);
+  gap: calc(var(--gap2) + 8px);
 }
 
 .reader-side {
@@ -858,14 +858,6 @@ button, input, textarea, select {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-#view-reader[data-reader-mode="page"] .reader-stage {
-  display: none;
-}
-
-#view-reader[data-reader-mode="rsvp"] .reader-page {
-  display: none;
 }
 
 .viewer-controls {
@@ -997,8 +989,8 @@ button, input, textarea, select {
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--card2) 92%, transparent);
   border-radius: var(--radius2);
-  padding: 26px 24px;
-  min-height: 240px;
+  padding: 36px 32px;
+  min-height: 320px;
   display: grid;
   place-items: center;
   overflow: hidden;
