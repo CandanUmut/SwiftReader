@@ -178,6 +178,12 @@
     return t.trim();
   }
 
+  function sanitizeExtractedText(raw) {
+    if (!raw) return "";
+    const cleaned = String(raw).replace(/\u0000/g, "");
+    return normalizeText(cleaned);
+  }
+
   function cloneArrayBuffer(buffer) {
     if (!(buffer instanceof ArrayBuffer)) return buffer;
     if (buffer.byteLength === 0) return new ArrayBuffer(0);
@@ -231,6 +237,13 @@
   const SOFT_PUNCT_WORD_RE = /[,;:]+$/;
   const LEADING_WRAPPER_RE = /^[([{"'“‘]+/;
   const TRAILING_WRAPPER_RE = /[)\]}"'”’]+$/;
+  const WORD_CHAR_RE = (() => {
+    try {
+      return new RegExp("[\\p{L}\\p{N}]", "u");
+    } catch (err) {
+      return /[A-Za-z0-9]/;
+    }
+  })();
 
   function mergePunctuationTokens(tokens) {
     if (!Array.isArray(tokens) || tokens.length === 0) return { tokens: [], changed: false };
@@ -310,20 +323,18 @@
       const para = parts[p].trim();
       if (!para) continue;
 
-      // Split into "words" and punctuation, keeping punctuation as separate tokens
-      // This is a simple and reliable tokenizer for MVP.
-      // Examples:
-      // "Hello, world!" => ["Hello", ",", "world", "!"]
       const raw = para
-        .replace(/([,.;:!?…])/g, " $1 ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .split(" ")
+        .split(/\s+/g)
+        .map(token => token.trim())
         .filter(Boolean);
 
       for (const r of raw) {
-        if (PUNCT_RE.test(r)) tokens.push({ t: r, kind: "punct" });
-        else tokens.push({ t: r, kind: "word" });
+        const isWordLike = WORD_CHAR_RE.test(r);
+        if (!isWordLike) {
+          tokens.push({ t: r, kind: "punct" });
+        } else {
+          tokens.push({ t: r, kind: "word" });
+        }
       }
 
       // Paragraph break (except after last)
@@ -1048,6 +1059,9 @@
   const pdfGoBtn = $("#pdf-go-btn");
   const pdfPageSlider = $("#pdf-page-slider");
   const pdfFullscreenBtn = $("#pdf-fullscreen-btn");
+  const pdfFitWidthBtn = $("#pdf-fit-width");
+  const pdfFitPageBtn = $("#pdf-fit-page");
+  const pdfZoomResetBtn = $("#pdf-zoom-reset");
   const pdfZoomInBtn = $("#pdf-zoom-in");
   const pdfZoomOutBtn = $("#pdf-zoom-out");
   const pdfZoomLabel = $("#pdf-zoom-label");
@@ -1156,15 +1170,14 @@
     renderScale: 1,
     canvasWidth: 0,
     canvasHeight: 0,
-    viewerState: {
-      scale: 1,
-      tx: 0,
-      ty: 0
-    },
+    scale: 1,
+    fitMode: "width",
     rendering: false,
     queuedPage: null,
     currentBookId: null,
     isFullscreen: false,
+    isPseudoFullscreen: false,
+    pendingScroll: null,
     pointers: new Map(),
     pinchState: null,
     panState: null,
@@ -1343,14 +1356,7 @@
       if (isNarrowReaderLayout()) setReaderMode("rsvp");
     }, "#pdf-canvas");
 
-    on(pdfFullscreenBtn, "click", () => {
-      if (!pdfFullscreenTarget || !pdfFullscreenTarget.requestFullscreen) return;
-      if (document.fullscreenElement) {
-        void document.exitFullscreen?.();
-      } else {
-        void pdfFullscreenTarget.requestFullscreen();
-      }
-    }, "#pdf-fullscreen-btn");
+    on(pdfFullscreenBtn, "click", () => togglePdfFullscreen(), "#pdf-fullscreen-btn");
 
     on(pdfViewer, "pointerdown", handlePdfPointerDown, "#pdf-viewer");
     on(pdfViewer, "pointermove", handlePdfPointerMove, "#pdf-viewer");
@@ -1368,6 +1374,9 @@
     on(pdfPrevBtn, "click", () => jumpPdfPage(-1), "#pdf-prev-btn");
     on(pdfNextBtn, "click", () => jumpPdfPage(1), "#pdf-next-btn");
     on(pdfLastBtn, "click", () => setPdfPage(pdfState.total || 1, { userInitiated: true }), "#pdf-last-btn");
+    on(pdfFitWidthBtn, "click", () => setPdfFitMode("width"), "#pdf-fit-width");
+    on(pdfFitPageBtn, "click", () => setPdfFitMode("page"), "#pdf-fit-page");
+    on(pdfZoomResetBtn, "click", () => resetPdfZoom(), "#pdf-zoom-reset");
     on(pdfZoomInBtn, "click", () => adjustPdfZoom(0.1), "#pdf-zoom-in");
     on(pdfZoomOutBtn, "click", () => adjustPdfZoom(-0.1), "#pdf-zoom-out");
     const applyPdfPageInput = () => {
@@ -1734,6 +1743,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       // Ignore if typing in inputs/textareas/selects
       if (isEditableTarget(e.target)) return;
       if (activeModal) return;
+      if (e.key === "Escape" && pdfState.isPseudoFullscreen) {
+        setPdfPseudoFullscreen(false);
+        return;
+      }
       const readerView = $("#view-reader");
       if (!readerView || !readerView.classList.contains("is-active")) {
         // Allow space to open reader quickly? keep simple: only if in reader.
@@ -1943,8 +1956,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     document.addEventListener("fullscreenchange", () => {
       updatePdfFullscreenButton();
       if (pdfState.doc && pdfState.currentBookId === selectedBookId) {
-        resetPdfViewTransform({ scale: 1 });
-        void renderPdfPage(pdfState.page || 1);
+        schedulePdfRender();
       }
     });
 
@@ -1952,8 +1964,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       scheduleRsvpFit();
       setReaderMode(state.settings.readerMode || (isNarrowReaderLayout() ? "page" : "rsvp"), { persist: false });
       if (pdfState.doc && pdfState.currentBookId === selectedBookId) {
-        applyPdfTransform();
-        void renderPdfPage(pdfState.page || 1);
+        schedulePdfRender();
       }
     });
 
@@ -1989,6 +2000,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     // Stop reading when leaving reader? We pause but keep state.
     if (view !== "reader") {
       if (reader.isPlaying) stopReader(false);
+      if (pdfState.isPseudoFullscreen) setPdfPseudoFullscreen(false);
     }
 
     // Toggle nav active
@@ -2537,17 +2549,32 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     await book.ready;
     const metadata = await book.loaded.metadata;
     await book.loaded.spine;
-    const sections = book.spine?.items || [];
+    const sections = book.spine?.spineItems || book.spine?.items || [];
     const chunks = [];
 
     for (let i = 0; i < sections.length; i += 1) {
       const section = sections[i];
       onStatus?.(`Extracting EPUB… ${i + 1} / ${sections.length}`);
-      const contents = await section.load(book.load.bind(book));
+      let contents = null;
+      try {
+        if (section?.load && typeof section.load === "function") {
+          contents = await section.load(book.load.bind(book));
+        } else if (section?.href) {
+          contents = await book.load(section.href);
+        } else if (book.spine?.get && section?.idref) {
+          const resolved = book.spine.get(section.idref);
+          if (resolved?.load) {
+            contents = await resolved.load(book.load.bind(book));
+          }
+        }
+      } catch (err) {
+        console.warn("EPUB section load failed", err);
+      }
       const doc = contents?.document || contents;
       const bodyText = doc?.body ? doc.body.textContent : "";
-      if (bodyText) chunks.push(bodyText.trim());
-      section.unload();
+      if (bodyText) chunks.push(sanitizeExtractedText(bodyText));
+      if (section?.unload) section.unload();
+      if (contents?.unload) contents.unload();
       await sleep(0);
     }
 
@@ -3171,9 +3198,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pdfState.renderScale = 1;
     pdfState.canvasWidth = 0;
     pdfState.canvasHeight = 0;
-    pdfState.viewerState.scale = 1;
-    pdfState.viewerState.tx = 0;
-    pdfState.viewerState.ty = 0;
+    pdfState.scale = 1;
+    pdfState.fitMode = "width";
+    pdfState.pendingScroll = null;
     pdfState.rendering = false;
     pdfState.queuedPage = null;
     pdfState.currentBookId = null;
@@ -3181,7 +3208,6 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pdfState.pinchState = null;
     pdfState.panState = null;
     if (pdfCanvasWrap) {
-      pdfCanvasWrap.style.transform = "translate(0px, 0px) scale(1)";
       pdfCanvasWrap.style.width = "0px";
       pdfCanvasWrap.style.height = "0px";
     }
@@ -3205,104 +3231,125 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (epubViewer) epubViewer.innerHTML = "";
   }
 
-  function clampPdfTransform() {
-    if (!pdfViewer) return;
-    const { scale } = pdfState.viewerState;
-    const containerWidth = pdfViewer.clientWidth || 0;
-    const containerHeight = pdfViewer.clientHeight || 0;
-    const contentWidth = pdfState.canvasWidth || 0;
-    const contentHeight = pdfState.canvasHeight || 0;
-    if (!containerWidth || !containerHeight || !contentWidth || !contentHeight) return;
-
-    const scaledWidth = contentWidth * scale;
-    const scaledHeight = contentHeight * scale;
-    let { tx, ty } = pdfState.viewerState;
-
-    if (scaledWidth <= containerWidth) {
-      tx = (containerWidth - scaledWidth) / 2;
-    } else {
-      tx = clamp(tx, containerWidth - scaledWidth, 0);
-    }
-
-    if (scaledHeight <= containerHeight) {
-      ty = (containerHeight - scaledHeight) / 2;
-    } else {
-      ty = clamp(ty, containerHeight - scaledHeight, 0);
-    }
-
-    pdfState.viewerState.tx = tx;
-    pdfState.viewerState.ty = ty;
+  function schedulePdfRender() {
+    if (pdfState.renderDebounce) clearTimeout(pdfState.renderDebounce);
+    pdfState.renderDebounce = setTimeout(() => {
+      pdfState.renderDebounce = null;
+      void renderPdfPage(pdfState.page || 1);
+    }, 60);
   }
 
-  function applyPdfTransform() {
-    if (!pdfCanvasWrap) return;
-    clampPdfTransform();
-    const { scale, tx, ty } = pdfState.viewerState;
-    pdfCanvasWrap.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  function setPdfFitMode(mode) {
+    if (!pdfState.doc) return;
+    pdfState.fitMode = mode;
+    schedulePdfRender();
   }
 
-  function resetPdfViewTransform({ scale = 1 } = {}) {
-    pdfState.viewerState.scale = clamp(scale, 0.8, 5);
-    pdfState.viewerState.tx = 0;
-    pdfState.viewerState.ty = 0;
-    applyPdfTransform();
-    updatePdfControls();
+  function resetPdfZoom() {
+    if (!pdfState.doc) return;
+    pdfState.fitMode = "custom";
+    pdfState.scale = 1;
+    schedulePdfRender();
   }
 
   function setPdfZoom(scale, { centerX, centerY } = {}) {
-    if (!pdfViewer) return;
+    if (!pdfViewer || !pdfState.doc) return;
     const rect = pdfViewer.getBoundingClientRect();
-    const anchorX = typeof centerX === "number" ? centerX : rect.left + rect.width / 2;
-    const anchorY = typeof centerY === "number" ? centerY : rect.top + rect.height / 2;
-    const prevScale = pdfState.viewerState.scale || 1;
-    const nextScale = clamp(scale, 0.8, 5);
-    const contentX = (anchorX - pdfState.viewerState.tx) / prevScale;
-    const contentY = (anchorY - pdfState.viewerState.ty) / prevScale;
-    pdfState.viewerState.scale = nextScale;
-    pdfState.viewerState.tx = anchorX - contentX * nextScale;
-    pdfState.viewerState.ty = anchorY - contentY * nextScale;
-    applyPdfTransform();
+    const anchorX = typeof centerX === "number" ? centerX - rect.left : rect.width / 2;
+    const anchorY = typeof centerY === "number" ? centerY - rect.top : rect.height / 2;
+    const prevScale = pdfState.scale || 1;
+    const nextScale = clamp(scale, 0.6, 4);
+    pdfState.scale = nextScale;
+    pdfState.fitMode = "custom";
+
+    const anchorOffsetX = pdfViewer.scrollLeft + anchorX;
+    const anchorOffsetY = pdfViewer.scrollTop + anchorY;
+    const ratio = nextScale / prevScale;
+    pdfState.pendingScroll = {
+      left: anchorOffsetX * ratio - anchorX,
+      top: anchorOffsetY * ratio - anchorY
+    };
+    schedulePdfRender();
     updatePdfControls();
   }
 
   function updatePdfFullscreenButton() {
     if (!pdfFullscreenBtn) return;
-    const isFullscreen = !!(document.fullscreenElement && pdfFullscreenTarget && document.fullscreenElement === pdfFullscreenTarget);
-    pdfState.isFullscreen = isFullscreen;
-    pdfFullscreenBtn.textContent = isFullscreen ? "Exit full screen" : "Full screen";
-    pdfFullscreenBtn.setAttribute("aria-label", isFullscreen ? "Exit full screen" : "Enter full screen");
+    const isNativeFullscreen = !!(document.fullscreenElement && pdfFullscreenTarget && document.fullscreenElement === pdfFullscreenTarget);
+    pdfState.isFullscreen = isNativeFullscreen;
+    const isActive = isNativeFullscreen || pdfState.isPseudoFullscreen;
+    pdfFullscreenBtn.textContent = isActive ? "Exit full screen" : "Full screen";
+    pdfFullscreenBtn.setAttribute("aria-label", isActive ? "Exit full screen" : "Enter full screen");
+  }
+
+  function setPdfPseudoFullscreen(enabled) {
+    if (enabled) {
+      document.body.classList.add("viewer-fullscreen");
+      pdfState.isPseudoFullscreen = true;
+    } else {
+      document.body.classList.remove("viewer-fullscreen");
+      pdfState.isPseudoFullscreen = false;
+    }
+    updatePdfFullscreenButton();
+    schedulePdfRender();
+  }
+
+  function togglePdfFullscreen() {
+    if (!pdfFullscreenTarget) return;
+    const isNative = document.fullscreenElement && document.fullscreenElement === pdfFullscreenTarget;
+    if (isNative || pdfState.isPseudoFullscreen) {
+      if (isNative) {
+        void document.exitFullscreen?.();
+      }
+      if (pdfState.isPseudoFullscreen) setPdfPseudoFullscreen(false);
+      return;
+    }
+    if (pdfFullscreenTarget.requestFullscreen) {
+      pdfFullscreenTarget.requestFullscreen().catch(() => setPdfPseudoFullscreen(true));
+    } else {
+      setPdfPseudoFullscreen(true);
+    }
   }
 
   function handlePdfPointerDown(event) {
-    if (!pdfViewer || !pdfCanvasWrap || !pdfState.doc) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    pdfViewer.setPointerCapture(event.pointerId);
-    pdfState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (!pdfViewer || !pdfState.doc) return;
+    if (event.pointerType === "mouse") {
+      if (event.button !== 0) return;
+      pdfViewer.setPointerCapture(event.pointerId);
+      pdfState.panState = {
+        startX: event.clientX,
+        startY: event.clientY,
+        startScrollLeft: pdfViewer.scrollLeft,
+        startScrollTop: pdfViewer.scrollTop
+      };
+      pdfViewer.classList.add("is-dragging");
+      event.preventDefault();
+      return;
+    }
 
+    pdfState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pdfState.pointers.size === 2) {
       const [a, b] = Array.from(pdfState.pointers.values());
       const distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
       pdfState.pinchState = {
         initialDistance: distance,
-        initialScale: pdfState.viewerState.scale || 1,
-        initialTx: pdfState.viewerState.tx,
-        initialTy: pdfState.viewerState.ty
+        initialScale: pdfState.scale || 1
       };
-      pdfState.panState = null;
-    } else if (pdfState.pointers.size === 1) {
-      pdfState.panState = {
-        startX: event.clientX,
-        startY: event.clientY,
-        startTx: pdfState.viewerState.tx,
-        startTy: pdfState.viewerState.ty
-      };
-      pdfViewer.classList.add("is-dragging");
+      event.preventDefault();
     }
-    event.preventDefault();
   }
 
   function handlePdfPointerMove(event) {
-    if (!pdfState.doc) return;
+    if (!pdfState.doc || !pdfViewer) return;
+    if (event.pointerType === "mouse" && pdfState.panState) {
+      const dx = event.clientX - pdfState.panState.startX;
+      const dy = event.clientY - pdfState.panState.startY;
+      pdfViewer.scrollLeft = pdfState.panState.startScrollLeft - dx;
+      pdfViewer.scrollTop = pdfState.panState.startScrollTop - dy;
+      event.preventDefault();
+      return;
+    }
+
     if (!pdfState.pointers.has(event.pointerId)) return;
     pdfState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
@@ -3311,57 +3358,37 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
       const centerX = (a.x + b.x) / 2;
       const centerY = (a.y + b.y) / 2;
-      const nextScale = clamp(pdfState.pinchState.initialScale * (distance / pdfState.pinchState.initialDistance), 0.8, 5);
-      const contentX = (centerX - pdfState.pinchState.initialTx) / pdfState.pinchState.initialScale;
-      const contentY = (centerY - pdfState.pinchState.initialTy) / pdfState.pinchState.initialScale;
-      pdfState.viewerState.scale = nextScale;
-      pdfState.viewerState.tx = centerX - contentX * nextScale;
-      pdfState.viewerState.ty = centerY - contentY * nextScale;
-      applyPdfTransform();
-      updatePdfControls();
-      event.preventDefault();
-      return;
-    }
-
-    if (pdfState.panState && pdfState.pointers.size === 1) {
-      const dx = event.clientX - pdfState.panState.startX;
-      const dy = event.clientY - pdfState.panState.startY;
-      pdfState.viewerState.tx = pdfState.panState.startTx + dx;
-      pdfState.viewerState.ty = pdfState.panState.startTy + dy;
-      applyPdfTransform();
+      const nextScale = clamp(pdfState.pinchState.initialScale * (distance / pdfState.pinchState.initialDistance), 0.6, 4);
+      setPdfZoom(nextScale, { centerX, centerY });
       event.preventDefault();
     }
   }
 
   function handlePdfPointerUp(event) {
-    if (pdfViewer?.hasPointerCapture?.(event.pointerId)) {
-      pdfViewer.releasePointerCapture(event.pointerId);
+    if (!pdfViewer) return;
+    if (event.pointerType === "mouse") {
+      if (pdfViewer.hasPointerCapture?.(event.pointerId)) {
+        pdfViewer.releasePointerCapture(event.pointerId);
+      }
+      pdfState.panState = null;
+      pdfViewer.classList.remove("is-dragging");
+      return;
     }
+
     if (pdfState.pointers.has(event.pointerId)) {
       pdfState.pointers.delete(event.pointerId);
     }
     if (pdfState.pointers.size < 2) {
       pdfState.pinchState = null;
     }
-    if (pdfState.pointers.size === 1) {
-      const [remaining] = Array.from(pdfState.pointers.values());
-      pdfState.panState = {
-        startX: remaining.x,
-        startY: remaining.y,
-        startTx: pdfState.viewerState.tx,
-        startTy: pdfState.viewerState.ty
-      };
-    } else if (pdfState.pointers.size === 0) {
-      pdfState.panState = null;
-      pdfViewer?.classList.remove("is-dragging");
-    }
   }
 
   function handlePdfWheel(event) {
     if (!pdfViewer || !pdfState.doc) return;
+    if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     const zoomFactor = Math.exp(-event.deltaY * 0.002);
-    setPdfZoom((pdfState.viewerState.scale || 1) * zoomFactor, {
+    setPdfZoom((pdfState.scale || 1) * zoomFactor, {
       centerX: event.clientX,
       centerY: event.clientY
     });
@@ -3380,7 +3407,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (pdfPrevBtn) pdfPrevBtn.disabled = pdfState.page <= 1;
     if (pdfNextBtn) pdfNextBtn.disabled = pdfState.page >= pdfState.total;
     if (pdfLastBtn) pdfLastBtn.disabled = pdfState.page >= pdfState.total;
-    if (pdfZoomLabel) pdfZoomLabel.textContent = `${Math.round((pdfState.viewerState.scale || 1) * 100)}%`;
+    if (pdfZoomLabel) pdfZoomLabel.textContent = `${Math.round((pdfState.scale || 1) * 100)}%`;
   }
 
   async function renderPdfPage(pageNumber) {
@@ -3395,8 +3422,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const page = await pdfState.doc.getPage(target);
     const unscaled = page.getViewport({ scale: 1 });
     const containerWidth = pdfViewer?.clientWidth || unscaled.width;
-    const fitScale = containerWidth ? (containerWidth - 16) / unscaled.width : 1;
-    const qualityBoost = pdfState.isFullscreen ? 1.2 : 1;
+    const containerHeight = pdfViewer?.clientHeight || unscaled.height;
+    const widthScale = containerWidth ? (containerWidth - 16) / unscaled.width : 1;
+    const heightScale = containerHeight ? (containerHeight - 16) / unscaled.height : 1;
+    let fitScale = widthScale;
+    if (pdfState.fitMode === "page") {
+      fitScale = Math.min(widthScale, heightScale);
+    }
+    if (pdfState.fitMode === "custom") {
+      fitScale = clamp(pdfState.scale || 1, 0.6, 4);
+    }
+    const qualityBoost = (pdfState.isFullscreen || pdfState.isPseudoFullscreen) ? 1.2 : 1;
     const renderScale = fitScale * qualityBoost;
     const outputScale = window.devicePixelRatio || 1;
     const viewport = page.getViewport({ scale: renderScale * outputScale });
@@ -3416,10 +3452,15 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pdfState.canvasWidth = cssViewport.width;
     pdfState.canvasHeight = cssViewport.height;
     pdfState.page = target;
+    pdfState.scale = fitScale;
     pdfState.rendering = false;
     updatePdfControls();
     setViewerStatus(`Page ${pdfState.page} / ${pdfState.total}`);
-    applyPdfTransform();
+    if (pdfState.pendingScroll && pdfViewer) {
+      pdfViewer.scrollLeft = pdfState.pendingScroll.left;
+      pdfViewer.scrollTop = pdfState.pendingScroll.top;
+      pdfState.pendingScroll = null;
+    }
 
     if (pdfState.queuedPage && pdfState.queuedPage !== target) {
       const next = pdfState.queuedPage;
@@ -3452,7 +3493,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       pdfState.doc = await loadingTask.promise;
       pdfState.total = pdfState.doc.numPages || 1;
       pdfState.currentBookId = book.id;
-      resetPdfViewTransform({ scale: 1 });
+      pdfState.fitMode = "width";
+      pdfState.scale = 1;
       const desiredPage = clamp(book.readerState?.currentPdfPage ?? 1, 1, pdfState.total);
       await renderPdfPage(desiredPage);
     } catch (err) {
@@ -3517,7 +3559,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function adjustPdfZoom(delta) {
-    setPdfZoom((pdfState.viewerState.scale || 1) + delta);
+    setPdfZoom((pdfState.scale || 1) + delta);
   }
 
   function schedulePdfSync(page) {
@@ -4046,11 +4088,6 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       reader.timer = null;
     }
 
-    if (reader.isPlaying && !hardStop) {
-      reader.pauses += 1;
-      if (statPauses) statPauses.textContent = String(reader.pauses);
-    }
-
     if (reader.isPlaying) {
       // accumulate elapsed
       const elapsed = Date.now() - (reader.startedAt || Date.now());
@@ -4106,29 +4143,42 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const cleaned = trimmed.replace(TRAILING_WRAPPER_RE, "");
     if (HARD_PUNCT_WORD_RE.test(cleaned)) return "hard";
     if (SOFT_PUNCT_WORD_RE.test(cleaned)) return "soft";
-    if (LEADING_WRAPPER_RE.test(trimmed) || TRAILING_WRAPPER_RE.test(trimmed)) return "wrapper";
     return null;
   }
 
-  function getPauseDelayForToken(tok) {
-    if (!state.settings.autoPause || !tok) return 0;
+  function getPauseInfoForToken(tok) {
+    if (!state.settings.autoPause || !tok) return { extraDelay: 0, countPause: false };
     const pauseSliderValue = clamp(Number(pauseSlider.value ?? state.settings.punctuationPause ?? 80), 0, 200);
     const pauseScale = pauseSliderValue / 100;
     const baseDelay = getBaseDelayMs();
+    const maxExtra = baseDelay * 2;
 
-    if (tok.kind === "para") return baseDelay * 1.8 * pauseScale;
+    if (tok.kind === "para") {
+      const extraDelay = Math.min(baseDelay * 1.2 * pauseScale, maxExtra);
+      return { extraDelay, countPause: extraDelay > 0 };
+    }
     if (tok.kind === "punct") {
-      if (HARD_PUNCT_RE.test(tok.t)) return baseDelay * 1.2 * pauseScale;
-      if (SOFT_PUNCT_RE.test(tok.t)) return baseDelay * 0.6 * pauseScale;
-      return baseDelay * 0.25 * pauseScale;
+      if (HARD_PUNCT_RE.test(tok.t)) {
+        const extraDelay = Math.min(baseDelay * 0.8 * pauseScale, maxExtra);
+        return { extraDelay, countPause: extraDelay > 0 };
+      }
+      if (SOFT_PUNCT_RE.test(tok.t)) {
+        const extraDelay = Math.min(baseDelay * 0.35 * pauseScale, maxExtra);
+        return { extraDelay, countPause: extraDelay > 0 };
+      }
     }
     if (tok.kind === "word") {
       const pauseKind = getPauseKindForWord(tok.t);
-      if (pauseKind === "hard") return baseDelay * 1.2 * pauseScale;
-      if (pauseKind === "soft") return baseDelay * 0.6 * pauseScale;
-      if (pauseKind === "wrapper") return baseDelay * 0.25 * pauseScale;
+      if (pauseKind === "hard") {
+        const extraDelay = Math.min(baseDelay * 0.8 * pauseScale, maxExtra);
+        return { extraDelay, countPause: extraDelay > 0 };
+      }
+      if (pauseKind === "soft") {
+        const extraDelay = Math.min(baseDelay * 0.35 * pauseScale, maxExtra);
+        return { extraDelay, countPause: extraDelay > 0 };
+      }
     }
-    return 0;
+    return { extraDelay: 0, countPause: false };
   }
 
   function scheduleNextTick(extraDelayMs) {
@@ -4180,7 +4230,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     setTokenIndex(idx, { fromPlayback: tok?.kind === "word" });
 
     // Compute pause
-    const extra = getPauseDelayForToken(tok);
+    const pauseInfo = getPauseInfoForToken(tok);
+    const extra = pauseInfo.extraDelay;
+    if (pauseInfo.countPause) {
+      reader.pauses += 1;
+      if (statPauses) statPauses.textContent = String(reader.pauses);
+    }
 
     // If at end, stop soon
     if (idx >= tokens.length - 1) {
