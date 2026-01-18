@@ -42,6 +42,15 @@
     return true;
   }
 
+  function bindWithOptions(el, event, handler, options, name = event) {
+    if (!el) {
+      console.warn(`SwiftReader bind: missing ${name}`);
+      return false;
+    }
+    el.addEventListener(event, handler, options);
+    return true;
+  }
+
   function setButtonLoading(btn, isLoading, label = "Importing…") {
     if (!btn) return;
     if (!btn.dataset.originalLabel) {
@@ -215,9 +224,79 @@
      { t: ".", kind: "punct" }
      { t: "\n\n", kind: "para" }
   --------------------------- */
-  const PUNCT_RE = /^[,.;:!?]$/;
-  const HARD_PUNCT_RE = /^[.!?]$/;
-  const SOFT_PUNCT_RE = /^[,;:]$/;
+  const PUNCT_RE = /^[,.;:!?…]+$/;
+  const HARD_PUNCT_RE = /^[.!?…]+$/;
+  const SOFT_PUNCT_RE = /^[,;:]+$/;
+  const HARD_PUNCT_WORD_RE = /[.!?…]+$/;
+  const SOFT_PUNCT_WORD_RE = /[,;:]+$/;
+  const LEADING_WRAPPER_RE = /^[([{"'“‘]+/;
+  const TRAILING_WRAPPER_RE = /[)\]}"'”’]+$/;
+
+  function mergePunctuationTokens(tokens) {
+    if (!Array.isArray(tokens) || tokens.length === 0) return { tokens: [], changed: false };
+    const merged = [];
+    let leading = "";
+    let changed = false;
+
+    const appendToPreviousWord = (text) => {
+      const last = merged[merged.length - 1];
+      if (last && last.kind === "word") {
+        last.t += text;
+        return;
+      }
+      leading += text;
+    };
+
+    tokens.forEach(tok => {
+      if (!tok) return;
+      if (tok.kind === "para") {
+        if (leading) {
+          changed = true;
+          leading = "";
+        }
+        merged.push({ ...tok });
+        return;
+      }
+
+      if (tok.kind === "punct") {
+        changed = true;
+        appendToPreviousWord(tok.t || "");
+        return;
+      }
+
+      if (tok.kind === "word") {
+        const text = `${leading}${tok.t || ""}`;
+        if (text) merged.push({ ...tok, t: text, kind: "word" });
+        if (leading) changed = true;
+        leading = "";
+      }
+    });
+
+    return { tokens: merged, changed };
+  }
+
+  function getWordIndexForTokenIndexFromTokens(tokens, tokenIndex) {
+    if (!Array.isArray(tokens) || !tokens.length) return 0;
+    let idx = clamp(tokenIndex, 0, tokens.length - 1);
+    let wordIndex = 0;
+    for (let i = 0; i <= idx; i += 1) {
+      if (tokens[i]?.kind === "word") wordIndex += 1;
+    }
+    if (tokens[idx]?.kind === "word") return Math.max(0, wordIndex - 1);
+    return Math.max(0, wordIndex - 1);
+  }
+
+  function getTokenIndexForWordIndexFromTokens(tokens, wordIndex) {
+    if (!Array.isArray(tokens) || !tokens.length) return 0;
+    let count = 0;
+    for (let i = 0; i < tokens.length; i += 1) {
+      if (tokens[i]?.kind === "word") {
+        if (count === wordIndex) return i;
+        count += 1;
+      }
+    }
+    return Math.max(0, tokens.length - 1);
+  }
 
   function tokenize(text) {
     const t = normalizeText(text);
@@ -236,7 +315,7 @@
       // Examples:
       // "Hello, world!" => ["Hello", ",", "world", "!"]
       const raw = para
-        .replace(/([,.;:!?])/g, " $1 ")
+        .replace(/([,.;:!?…])/g, " $1 ")
         .replace(/\s+/g, " ")
         .trim()
         .split(" ")
@@ -253,7 +332,7 @@
       }
     }
 
-    return tokens;
+    return mergePunctuationTokens(tokens).tokens;
   }
 
   function countWords(tokens) {
@@ -958,6 +1037,7 @@
   const documentViewer = $("#document-viewer");
   const viewerStatus = $("#viewer-status");
   const pdfViewer = $("#pdf-viewer");
+  const pdfCanvasWrap = $("#pdf-canvas-wrap");
   const pdfCanvas = $("#pdf-canvas");
   const pdfFirstBtn = $("#pdf-first-btn");
   const pdfPrevBtn = $("#pdf-prev-btn");
@@ -967,12 +1047,14 @@
   const pdfPageTotal = $("#pdf-page-total");
   const pdfGoBtn = $("#pdf-go-btn");
   const pdfPageSlider = $("#pdf-page-slider");
+  const pdfFullscreenBtn = $("#pdf-fullscreen-btn");
   const pdfZoomInBtn = $("#pdf-zoom-in");
   const pdfZoomOutBtn = $("#pdf-zoom-out");
   const pdfZoomLabel = $("#pdf-zoom-label");
   const syncRsvpToggle = $("#sync-rsvp-toggle");
   const epubViewer = $("#epub-viewer");
   const viewerControls = $(".viewer-controls");
+  const pdfFullscreenTarget = document.querySelector(".reader-page");
 
   const rsvpLeft = $("#rsvp-left");
   const rsvpPivot = $("#rsvp-pivot");
@@ -1070,10 +1152,23 @@
     doc: null,
     page: 1,
     total: 1,
-    scale: 1,
+    fitScale: 1,
+    renderScale: 1,
+    canvasWidth: 0,
+    canvasHeight: 0,
+    viewerState: {
+      scale: 1,
+      tx: 0,
+      ty: 0
+    },
     rendering: false,
     queuedPage: null,
-    currentBookId: null
+    currentBookId: null,
+    isFullscreen: false,
+    pointers: new Map(),
+    pinchState: null,
+    panState: null,
+    renderDebounce: null
   };
 
   const epubState = {
@@ -1144,6 +1239,7 @@
     initDebugHelpers();
     flushBootToasts();
     bootBindings = wireEvents();
+    updatePdfFullscreenButton();
     logBootStatus();
     renderAll();
     restoreLastBookIfNeeded();
@@ -1246,6 +1342,27 @@
       setTokenIndex(tokenIndex, { fromPlayback: false, syncPageView: false });
       if (isNarrowReaderLayout()) setReaderMode("rsvp");
     }, "#pdf-canvas");
+
+    on(pdfFullscreenBtn, "click", () => {
+      if (!pdfFullscreenTarget || !pdfFullscreenTarget.requestFullscreen) return;
+      if (document.fullscreenElement) {
+        void document.exitFullscreen?.();
+      } else {
+        void pdfFullscreenTarget.requestFullscreen();
+      }
+    }, "#pdf-fullscreen-btn");
+
+    on(pdfViewer, "pointerdown", handlePdfPointerDown, "#pdf-viewer");
+    on(pdfViewer, "pointermove", handlePdfPointerMove, "#pdf-viewer");
+    on(pdfViewer, "pointerup", handlePdfPointerUp, "#pdf-viewer");
+    on(pdfViewer, "pointercancel", handlePdfPointerUp, "#pdf-viewer");
+    on(pdfViewer, "pointerleave", handlePdfPointerUp, "#pdf-viewer");
+    if (bindWithOptions(pdfViewer, "wheel", handlePdfWheel, { passive: false }, "#pdf-viewer wheel")) {
+      bindings.attempted += 1;
+      bindings.bound += 1;
+    } else {
+      bindings.attempted += 1;
+    }
 
     on(pdfFirstBtn, "click", () => setPdfPage(1, { userInitiated: true }), "#pdf-first-btn");
     on(pdfPrevBtn, "click", () => jumpPdfPage(-1), "#pdf-prev-btn");
@@ -1823,10 +1940,19 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
     });
 
+    document.addEventListener("fullscreenchange", () => {
+      updatePdfFullscreenButton();
+      if (pdfState.doc && pdfState.currentBookId === selectedBookId) {
+        resetPdfViewTransform({ scale: 1 });
+        void renderPdfPage(pdfState.page || 1);
+      }
+    });
+
     window.addEventListener("resize", () => {
       scheduleRsvpFit();
       setReaderMode(state.settings.readerMode || (isNarrowReaderLayout() ? "page" : "rsvp"), { persist: false });
       if (pdfState.doc && pdfState.currentBookId === selectedBookId) {
+        applyPdfTransform();
         void renderPdfPage(pdfState.page || 1);
       }
     });
@@ -2400,6 +2526,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (!epubLib) {
       throw new Error("epub.js not available");
     }
+    if (!window.JSZip) {
+      onStatus?.("EPUB support missing (JSZip not loaded).");
+      showToast({ title: "EPUB support missing", message: "JSZip is required to import EPUB files.", type: "error" });
+      return { title: "", text: "", fileData: null };
+    }
     const buffer = await file.arrayBuffer();
     const fileData = cloneArrayBuffer(buffer);
     const book = epubLib(buffer);
@@ -2502,6 +2633,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (lower.endsWith(".epub")) {
       const baseTitle = name.replace(/\.epub$/i, "");
+      if (!window.ePub) {
+        setImportStatus("EPUB viewer unavailable.");
+        showToast({ title: "EPUB unavailable", message: "EPUB support is not loaded yet.", type: "error" });
+        return null;
+      }
+      if (!window.JSZip) {
+        setImportStatus("EPUB support missing (JSZip not loaded).");
+        showToast({ title: "EPUB support missing", message: "JSZip is required to import EPUB files.", type: "error" });
+        return null;
+      }
       const { text, title, fileData } = await extractTextFromEpub(file, status => setImportStatus(status));
       if (!text || text.length < 40) {
         setImportStatus("No readable text found in EPUB.");
@@ -2614,6 +2755,34 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (idbReady) {
       const content = await idbGet(DB_STORES.contents, bookId);
       if (content && (content.rawText || content.tokens?.length)) {
+        const merged = mergePunctuationTokens(content.tokens || []);
+        if (merged.changed) {
+          const wordIndex = getWordIndexForTokenIndexFromTokens(content.tokens || [], book.progress?.index ?? 0);
+          const updatedIndex = getTokenIndexForWordIndexFromTokens(merged.tokens, wordIndex);
+          const updatedBook = {
+            ...book,
+            tokenCount: merged.tokens.length,
+            wordCount: countWords(merged.tokens),
+            progress: {
+              ...book.progress,
+              index: updatedIndex,
+              updatedAt: nowISO()
+            },
+            readerState: {
+              ...book.readerState,
+              currentWordIndex: wordIndex
+            }
+          };
+          upsertBook(updatedBook);
+          const extras = { ...content };
+          delete extras.bookId;
+          delete extras.rawText;
+          delete extras.tokens;
+          delete extras.tokenCount;
+          delete extras.updatedAt;
+          await persistBookContentToIdb(bookId, content.rawText || "", merged.tokens, extras);
+          return contentCache.get(bookId);
+        }
         contentCache.set(bookId, content);
         if (!book.tokenCount && content.tokenCount) {
           upsertBook({ ...book, tokenCount: content.tokenCount });
@@ -2625,7 +2794,31 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     // Fallback to localStorage legacy content
     if (book.text || (book.tokens && book.tokens.length)) {
       const text = book.text || "";
-      const tokens = book.tokens && book.tokens.length ? book.tokens : tokenize(text);
+      let tokens = [];
+      if (book.tokens && book.tokens.length) {
+        const merged = mergePunctuationTokens(book.tokens);
+        tokens = merged.tokens;
+        if (merged.changed) {
+          const wordIndex = getWordIndexForTokenIndexFromTokens(book.tokens, book.progress?.index ?? 0);
+          const updatedIndex = getTokenIndexForWordIndexFromTokens(tokens, wordIndex);
+          upsertBook({
+            ...book,
+            tokenCount: tokens.length,
+            wordCount: countWords(tokens),
+            progress: {
+              ...book.progress,
+              index: updatedIndex,
+              updatedAt: nowISO()
+            },
+            readerState: {
+              ...book.readerState,
+              currentWordIndex: wordIndex
+            }
+          });
+        }
+      } else {
+        tokens = tokenize(text);
+      }
       const content = {
         bookId,
         rawText: text,
@@ -2974,10 +3167,25 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pdfState.doc = null;
     pdfState.page = 1;
     pdfState.total = 1;
-    pdfState.scale = 1;
+    pdfState.fitScale = 1;
+    pdfState.renderScale = 1;
+    pdfState.canvasWidth = 0;
+    pdfState.canvasHeight = 0;
+    pdfState.viewerState.scale = 1;
+    pdfState.viewerState.tx = 0;
+    pdfState.viewerState.ty = 0;
     pdfState.rendering = false;
     pdfState.queuedPage = null;
     pdfState.currentBookId = null;
+    pdfState.pointers.clear();
+    pdfState.pinchState = null;
+    pdfState.panState = null;
+    if (pdfCanvasWrap) {
+      pdfCanvasWrap.style.transform = "translate(0px, 0px) scale(1)";
+      pdfCanvasWrap.style.width = "0px";
+      pdfCanvasWrap.style.height = "0px";
+    }
+    if (pdfViewer) pdfViewer.classList.remove("is-dragging");
     if (pdfCanvas) {
       const ctx = pdfCanvas.getContext("2d");
       if (ctx) ctx.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
@@ -2997,6 +3205,168 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (epubViewer) epubViewer.innerHTML = "";
   }
 
+  function clampPdfTransform() {
+    if (!pdfViewer) return;
+    const { scale } = pdfState.viewerState;
+    const containerWidth = pdfViewer.clientWidth || 0;
+    const containerHeight = pdfViewer.clientHeight || 0;
+    const contentWidth = pdfState.canvasWidth || 0;
+    const contentHeight = pdfState.canvasHeight || 0;
+    if (!containerWidth || !containerHeight || !contentWidth || !contentHeight) return;
+
+    const scaledWidth = contentWidth * scale;
+    const scaledHeight = contentHeight * scale;
+    let { tx, ty } = pdfState.viewerState;
+
+    if (scaledWidth <= containerWidth) {
+      tx = (containerWidth - scaledWidth) / 2;
+    } else {
+      tx = clamp(tx, containerWidth - scaledWidth, 0);
+    }
+
+    if (scaledHeight <= containerHeight) {
+      ty = (containerHeight - scaledHeight) / 2;
+    } else {
+      ty = clamp(ty, containerHeight - scaledHeight, 0);
+    }
+
+    pdfState.viewerState.tx = tx;
+    pdfState.viewerState.ty = ty;
+  }
+
+  function applyPdfTransform() {
+    if (!pdfCanvasWrap) return;
+    clampPdfTransform();
+    const { scale, tx, ty } = pdfState.viewerState;
+    pdfCanvasWrap.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  }
+
+  function resetPdfViewTransform({ scale = 1 } = {}) {
+    pdfState.viewerState.scale = clamp(scale, 0.8, 5);
+    pdfState.viewerState.tx = 0;
+    pdfState.viewerState.ty = 0;
+    applyPdfTransform();
+    updatePdfControls();
+  }
+
+  function setPdfZoom(scale, { centerX, centerY } = {}) {
+    if (!pdfViewer) return;
+    const rect = pdfViewer.getBoundingClientRect();
+    const anchorX = typeof centerX === "number" ? centerX : rect.left + rect.width / 2;
+    const anchorY = typeof centerY === "number" ? centerY : rect.top + rect.height / 2;
+    const prevScale = pdfState.viewerState.scale || 1;
+    const nextScale = clamp(scale, 0.8, 5);
+    const contentX = (anchorX - pdfState.viewerState.tx) / prevScale;
+    const contentY = (anchorY - pdfState.viewerState.ty) / prevScale;
+    pdfState.viewerState.scale = nextScale;
+    pdfState.viewerState.tx = anchorX - contentX * nextScale;
+    pdfState.viewerState.ty = anchorY - contentY * nextScale;
+    applyPdfTransform();
+    updatePdfControls();
+  }
+
+  function updatePdfFullscreenButton() {
+    if (!pdfFullscreenBtn) return;
+    const isFullscreen = !!(document.fullscreenElement && pdfFullscreenTarget && document.fullscreenElement === pdfFullscreenTarget);
+    pdfState.isFullscreen = isFullscreen;
+    pdfFullscreenBtn.textContent = isFullscreen ? "Exit full screen" : "Full screen";
+    pdfFullscreenBtn.setAttribute("aria-label", isFullscreen ? "Exit full screen" : "Enter full screen");
+  }
+
+  function handlePdfPointerDown(event) {
+    if (!pdfViewer || !pdfCanvasWrap || !pdfState.doc) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    pdfViewer.setPointerCapture(event.pointerId);
+    pdfState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pdfState.pointers.size === 2) {
+      const [a, b] = Array.from(pdfState.pointers.values());
+      const distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      pdfState.pinchState = {
+        initialDistance: distance,
+        initialScale: pdfState.viewerState.scale || 1,
+        initialTx: pdfState.viewerState.tx,
+        initialTy: pdfState.viewerState.ty
+      };
+      pdfState.panState = null;
+    } else if (pdfState.pointers.size === 1) {
+      pdfState.panState = {
+        startX: event.clientX,
+        startY: event.clientY,
+        startTx: pdfState.viewerState.tx,
+        startTy: pdfState.viewerState.ty
+      };
+      pdfViewer.classList.add("is-dragging");
+    }
+    event.preventDefault();
+  }
+
+  function handlePdfPointerMove(event) {
+    if (!pdfState.doc) return;
+    if (!pdfState.pointers.has(event.pointerId)) return;
+    pdfState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pdfState.pointers.size === 2 && pdfState.pinchState) {
+      const [a, b] = Array.from(pdfState.pointers.values());
+      const distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const centerX = (a.x + b.x) / 2;
+      const centerY = (a.y + b.y) / 2;
+      const nextScale = clamp(pdfState.pinchState.initialScale * (distance / pdfState.pinchState.initialDistance), 0.8, 5);
+      const contentX = (centerX - pdfState.pinchState.initialTx) / pdfState.pinchState.initialScale;
+      const contentY = (centerY - pdfState.pinchState.initialTy) / pdfState.pinchState.initialScale;
+      pdfState.viewerState.scale = nextScale;
+      pdfState.viewerState.tx = centerX - contentX * nextScale;
+      pdfState.viewerState.ty = centerY - contentY * nextScale;
+      applyPdfTransform();
+      updatePdfControls();
+      event.preventDefault();
+      return;
+    }
+
+    if (pdfState.panState && pdfState.pointers.size === 1) {
+      const dx = event.clientX - pdfState.panState.startX;
+      const dy = event.clientY - pdfState.panState.startY;
+      pdfState.viewerState.tx = pdfState.panState.startTx + dx;
+      pdfState.viewerState.ty = pdfState.panState.startTy + dy;
+      applyPdfTransform();
+      event.preventDefault();
+    }
+  }
+
+  function handlePdfPointerUp(event) {
+    if (pdfViewer?.hasPointerCapture?.(event.pointerId)) {
+      pdfViewer.releasePointerCapture(event.pointerId);
+    }
+    if (pdfState.pointers.has(event.pointerId)) {
+      pdfState.pointers.delete(event.pointerId);
+    }
+    if (pdfState.pointers.size < 2) {
+      pdfState.pinchState = null;
+    }
+    if (pdfState.pointers.size === 1) {
+      const [remaining] = Array.from(pdfState.pointers.values());
+      pdfState.panState = {
+        startX: remaining.x,
+        startY: remaining.y,
+        startTx: pdfState.viewerState.tx,
+        startTy: pdfState.viewerState.ty
+      };
+    } else if (pdfState.pointers.size === 0) {
+      pdfState.panState = null;
+      pdfViewer?.classList.remove("is-dragging");
+    }
+  }
+
+  function handlePdfWheel(event) {
+    if (!pdfViewer || !pdfState.doc) return;
+    event.preventDefault();
+    const zoomFactor = Math.exp(-event.deltaY * 0.002);
+    setPdfZoom((pdfState.viewerState.scale || 1) * zoomFactor, {
+      centerX: event.clientX,
+      centerY: event.clientY
+    });
+  }
+
   function updatePdfControls() {
     if (!pdfPageInput || !pdfPageTotal) return;
     pdfPageInput.value = String(pdfState.page || 1);
@@ -3010,7 +3380,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (pdfPrevBtn) pdfPrevBtn.disabled = pdfState.page <= 1;
     if (pdfNextBtn) pdfNextBtn.disabled = pdfState.page >= pdfState.total;
     if (pdfLastBtn) pdfLastBtn.disabled = pdfState.page >= pdfState.total;
-    if (pdfZoomLabel) pdfZoomLabel.textContent = `${Math.round((pdfState.scale || 1) * 100)}%`;
+    if (pdfZoomLabel) pdfZoomLabel.textContent = `${Math.round((pdfState.viewerState.scale || 1) * 100)}%`;
   }
 
   async function renderPdfPage(pageNumber) {
@@ -3025,16 +3395,31 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const page = await pdfState.doc.getPage(target);
     const unscaled = page.getViewport({ scale: 1 });
     const containerWidth = pdfViewer?.clientWidth || unscaled.width;
-    const fitScale = containerWidth ? (containerWidth - 8) / unscaled.width : 1;
-    const viewport = page.getViewport({ scale: fitScale * (pdfState.scale || 1) });
+    const fitScale = containerWidth ? (containerWidth - 16) / unscaled.width : 1;
+    const qualityBoost = pdfState.isFullscreen ? 1.2 : 1;
+    const renderScale = fitScale * qualityBoost;
+    const outputScale = window.devicePixelRatio || 1;
+    const viewport = page.getViewport({ scale: renderScale * outputScale });
+    const cssViewport = page.getViewport({ scale: renderScale });
     const ctx = pdfCanvas.getContext("2d");
     pdfCanvas.width = viewport.width;
     pdfCanvas.height = viewport.height;
+    pdfCanvas.style.width = `${cssViewport.width}px`;
+    pdfCanvas.style.height = `${cssViewport.height}px`;
+    if (pdfCanvasWrap) {
+      pdfCanvasWrap.style.width = `${cssViewport.width}px`;
+      pdfCanvasWrap.style.height = `${cssViewport.height}px`;
+    }
     await page.render({ canvasContext: ctx, viewport }).promise;
+    pdfState.fitScale = fitScale;
+    pdfState.renderScale = renderScale;
+    pdfState.canvasWidth = cssViewport.width;
+    pdfState.canvasHeight = cssViewport.height;
     pdfState.page = target;
     pdfState.rendering = false;
     updatePdfControls();
     setViewerStatus(`Page ${pdfState.page} / ${pdfState.total}`);
+    applyPdfTransform();
 
     if (pdfState.queuedPage && pdfState.queuedPage !== target) {
       const next = pdfState.queuedPage;
@@ -3067,7 +3452,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       pdfState.doc = await loadingTask.promise;
       pdfState.total = pdfState.doc.numPages || 1;
       pdfState.currentBookId = book.id;
-      pdfState.scale = 1;
+      resetPdfViewTransform({ scale: 1 });
       const desiredPage = clamp(book.readerState?.currentPdfPage ?? 1, 1, pdfState.total);
       await renderPdfPage(desiredPage);
     } catch (err) {
@@ -3092,6 +3477,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const epubLib = window.ePub;
       if (!epubLib) {
         setViewerStatus("EPUB viewer unavailable.");
+        return;
+      }
+      if (!window.JSZip) {
+        setViewerStatus("EPUB support missing (JSZip not loaded).");
+        showToast({ title: "EPUB support missing", message: "JSZip is required to open EPUB files.", type: "error" });
         return;
       }
       setViewerStatus("Loading EPUB…");
@@ -3127,9 +3517,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   function adjustPdfZoom(delta) {
-    pdfState.scale = clamp((pdfState.scale || 1) + delta, 0.6, 2.5);
-    void renderPdfPage(pdfState.page || 1);
-    updatePdfControls();
+    setPdfZoom((pdfState.viewerState.scale || 1) + delta);
   }
 
   function schedulePdfSync(page) {
@@ -3712,6 +4100,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return 60000 / baseWpm;
   }
 
+  function getPauseKindForWord(text) {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return null;
+    const cleaned = trimmed.replace(TRAILING_WRAPPER_RE, "");
+    if (HARD_PUNCT_WORD_RE.test(cleaned)) return "hard";
+    if (SOFT_PUNCT_WORD_RE.test(cleaned)) return "soft";
+    if (LEADING_WRAPPER_RE.test(trimmed) || TRAILING_WRAPPER_RE.test(trimmed)) return "wrapper";
+    return null;
+  }
+
   function getPauseDelayForToken(tok) {
     if (!state.settings.autoPause || !tok) return 0;
     const pauseSliderValue = clamp(Number(pauseSlider.value ?? state.settings.punctuationPause ?? 80), 0, 200);
@@ -3719,9 +4117,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const baseDelay = getBaseDelayMs();
 
     if (tok.kind === "para") return baseDelay * 1.8 * pauseScale;
-    if (tok.kind !== "punct") return 0;
-    if (HARD_PUNCT_RE.test(tok.t)) return baseDelay * 1.2 * pauseScale;
-    if (SOFT_PUNCT_RE.test(tok.t)) return baseDelay * 0.6 * pauseScale;
+    if (tok.kind === "punct") {
+      if (HARD_PUNCT_RE.test(tok.t)) return baseDelay * 1.2 * pauseScale;
+      if (SOFT_PUNCT_RE.test(tok.t)) return baseDelay * 0.6 * pauseScale;
+      return baseDelay * 0.25 * pauseScale;
+    }
+    if (tok.kind === "word") {
+      const pauseKind = getPauseKindForWord(tok.t);
+      if (pauseKind === "hard") return baseDelay * 1.2 * pauseScale;
+      if (pauseKind === "soft") return baseDelay * 0.6 * pauseScale;
+      if (pauseKind === "wrapper") return baseDelay * 0.25 * pauseScale;
+    }
     return 0;
   }
 
@@ -3835,7 +4241,13 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     function isSentenceEnd(i) {
       const t = tokens[i];
-      return t && t.kind === "punct" && HARD_PUNCT_RE.test(t.t);
+      if (!t) return false;
+      if (t.kind === "punct") return HARD_PUNCT_RE.test(t.t);
+      if (t.kind === "word") {
+        const cleaned = (t.t || "").replace(TRAILING_WRAPPER_RE, "");
+        return HARD_PUNCT_WORD_RE.test(cleaned);
+      }
+      return false;
     }
 
     let target = idx;

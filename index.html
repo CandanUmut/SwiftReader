@@ -310,6 +310,9 @@
                       <input id="pdf-page-slider" class="range range-xs" type="range" min="1" max="1" value="1" step="1" aria-label="Page scrubber" />
                     </div>
                     <div class="viewer-zoom">
+                      <button id="pdf-fullscreen-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Enter full screen">
+                        Full screen
+                      </button>
                       <button id="pdf-zoom-out" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom out">−</button>
                       <span id="pdf-zoom-label" class="subtle">100%</span>
                       <button id="pdf-zoom-in" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom in">＋</button>
@@ -326,7 +329,9 @@
                     <div id="viewer-status" class="viewer-status subtle">Select a book to view pages.</div>
                     <div class="viewer-stage">
                       <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF pages" hidden>
-                        <canvas id="pdf-canvas" class="pdf-canvas"></canvas>
+                        <div id="pdf-canvas-wrap" class="pdf-canvas-wrap">
+                          <canvas id="pdf-canvas" class="pdf-canvas"></canvas>
+                        </div>
                       </div>
                       <div id="epub-viewer" class="epub-viewer" aria-label="EPUB view" hidden></div>
                     </div>
@@ -761,7 +766,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/idb@7/build/umd.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js" defer></script>
+    <script src="./vendor/jszip.min.js"></script>
+    <script src="./vendor/epub.min.js"></script>
     <script src="./app.js" defer></script>
   </body>
 </html>
