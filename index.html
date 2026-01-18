@@ -285,6 +285,9 @@
                   </div>
                   <div class="viewer-controls" aria-label="Viewer controls">
                     <div class="viewer-nav">
+                      <button id="pdf-first-btn" class="btn btn-ghost btn-sm" type="button" aria-label="First page">
+                        ⏮
+                      </button>
                       <button id="pdf-prev-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Previous page">
                         ◀
                       </button>
@@ -292,10 +295,19 @@
                         <label class="sr-only" for="pdf-page-input">Page number</label>
                         <input id="pdf-page-input" class="input input-xs" type="number" min="1" value="1" inputmode="numeric" />
                         <span class="viewer-page-total">/ <span id="pdf-page-total">1</span></span>
+                        <button id="pdf-go-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Go to page">
+                          Go
+                        </button>
                       </div>
                       <button id="pdf-next-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Next page">
                         ▶
                       </button>
+                      <button id="pdf-last-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Last page">
+                        ⏭
+                      </button>
+                    </div>
+                    <div class="viewer-scrub">
+                      <input id="pdf-page-slider" class="range range-xs" type="range" min="1" max="1" value="1" step="1" aria-label="Page scrubber" />
                     </div>
                     <div class="viewer-zoom">
                       <button id="pdf-zoom-out" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom out">−</button>

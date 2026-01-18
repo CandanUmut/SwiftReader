@@ -907,6 +907,11 @@ button, input, textarea, select {
   color: var(--muted);
 }
 
+.viewer-scrub {
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+
 .viewer-sync {
   font-size: 12px;
 }
@@ -915,6 +920,10 @@ button, input, textarea, select {
   padding: 6px 8px;
   font-size: 13px;
   max-width: 80px;
+}
+
+.range-xs {
+  height: 26px;
 }
 
 .document-viewer {
@@ -1212,6 +1221,26 @@ button, input, textarea, select {
   .page-view {
     max-height: 55vh;
     font-size: 16px;
+  }
+
+  .viewer-controls {
+    justify-content: flex-start;
+  }
+
+  .viewer-scrub {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .rsvp-word {
+    justify-content: center;
+  }
+
+  .rsvp-left,
+  .rsvp-right {
+    width: auto;
+    max-width: 45vw;
+    flex: 0 1 auto;
   }
 }
 

@@ -959,10 +959,14 @@
   const viewerStatus = $("#viewer-status");
   const pdfViewer = $("#pdf-viewer");
   const pdfCanvas = $("#pdf-canvas");
+  const pdfFirstBtn = $("#pdf-first-btn");
   const pdfPrevBtn = $("#pdf-prev-btn");
   const pdfNextBtn = $("#pdf-next-btn");
+  const pdfLastBtn = $("#pdf-last-btn");
   const pdfPageInput = $("#pdf-page-input");
   const pdfPageTotal = $("#pdf-page-total");
+  const pdfGoBtn = $("#pdf-go-btn");
+  const pdfPageSlider = $("#pdf-page-slider");
   const pdfZoomInBtn = $("#pdf-zoom-in");
   const pdfZoomOutBtn = $("#pdf-zoom-out");
   const pdfZoomLabel = $("#pdf-zoom-label");
@@ -1058,6 +1062,7 @@
   let pendingScrubValue = null;
   let pdfSyncTimer = null;
   let pdfSyncTarget = null;
+  let pdfScrubTimer = null;
   let fatalBanner = null;
   let bootBindings = { attempted: 0, bound: 0 };
 
@@ -1242,14 +1247,51 @@
       if (isNarrowReaderLayout()) setReaderMode("rsvp");
     }, "#pdf-canvas");
 
+    on(pdfFirstBtn, "click", () => setPdfPage(1, { userInitiated: true }), "#pdf-first-btn");
     on(pdfPrevBtn, "click", () => jumpPdfPage(-1), "#pdf-prev-btn");
     on(pdfNextBtn, "click", () => jumpPdfPage(1), "#pdf-next-btn");
+    on(pdfLastBtn, "click", () => setPdfPage(pdfState.total || 1, { userInitiated: true }), "#pdf-last-btn");
     on(pdfZoomInBtn, "click", () => adjustPdfZoom(0.1), "#pdf-zoom-in");
     on(pdfZoomOutBtn, "click", () => adjustPdfZoom(-0.1), "#pdf-zoom-out");
-    on(pdfPageInput, "change", () => {
+    const applyPdfPageInput = () => {
+      if (!pdfPageInput) return;
       const value = Number(pdfPageInput.value);
+      if (!Number.isFinite(value)) {
+        updatePdfControls();
+        return;
+      }
       setPdfPage(value, { userInitiated: true });
+    };
+    on(pdfPageInput, "change", () => applyPdfPageInput(), "#pdf-page-input");
+    on(pdfPageInput, "keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      applyPdfPageInput();
+      pdfPageInput.blur();
     }, "#pdf-page-input");
+    on(pdfPageInput, "blur", () => applyPdfPageInput(), "#pdf-page-input");
+    on(pdfGoBtn, "click", () => applyPdfPageInput(), "#pdf-go-btn");
+    on(pdfPageSlider, "input", () => {
+      if (!pdfPageSlider) return;
+      const value = Number(pdfPageSlider.value);
+      if (!Number.isFinite(value)) return;
+      if (pdfPageInput) pdfPageInput.value = String(value);
+      if (pdfScrubTimer) clearTimeout(pdfScrubTimer);
+      pdfScrubTimer = setTimeout(() => {
+        pdfScrubTimer = null;
+        setPdfPage(value, { userInitiated: true });
+      }, 120);
+    }, "#pdf-page-slider");
+    on(pdfPageSlider, "change", () => {
+      if (!pdfPageSlider) return;
+      const value = Number(pdfPageSlider.value);
+      if (!Number.isFinite(value)) return;
+      if (pdfScrubTimer) {
+        clearTimeout(pdfScrubTimer);
+        pdfScrubTimer = null;
+      }
+      setPdfPage(value, { userInitiated: true });
+    }, "#pdf-page-slider");
 
     on(syncRsvpToggle, "change", () => {
       const book = selectedBookId ? getBook(selectedBookId) : null;
@@ -2960,8 +3002,14 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pdfPageInput.value = String(pdfState.page || 1);
     pdfPageInput.max = String(pdfState.total || 1);
     pdfPageTotal.textContent = String(pdfState.total || 1);
+    if (pdfPageSlider) {
+      pdfPageSlider.value = String(pdfState.page || 1);
+      pdfPageSlider.max = String(pdfState.total || 1);
+    }
+    if (pdfFirstBtn) pdfFirstBtn.disabled = pdfState.page <= 1;
     if (pdfPrevBtn) pdfPrevBtn.disabled = pdfState.page <= 1;
     if (pdfNextBtn) pdfNextBtn.disabled = pdfState.page >= pdfState.total;
+    if (pdfLastBtn) pdfLastBtn.disabled = pdfState.page >= pdfState.total;
     if (pdfZoomLabel) pdfZoomLabel.textContent = `${Math.round((pdfState.scale || 1) * 100)}%`;
   }
 
