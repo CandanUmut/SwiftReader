@@ -288,9 +288,6 @@
                       <button id="pdf-first-btn" class="btn btn-ghost btn-sm" type="button" aria-label="First page">
                         ⏮
                       </button>
-                      <button id="pdf-prev-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Previous page">
-                        ◀
-                      </button>
                       <div class="viewer-page-input">
                         <label class="sr-only" for="pdf-page-input">Page number</label>
                         <input id="pdf-page-input" class="input input-xs" type="number" min="1" value="1" inputmode="numeric" />
@@ -299,9 +296,6 @@
                           Go
                         </button>
                       </div>
-                      <button id="pdf-next-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Next page">
-                        ▶
-                      </button>
                       <button id="pdf-last-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Last page">
                         ⏭
                       </button>
@@ -342,6 +336,14 @@
                         <div id="pdf-canvas-wrap" class="pdf-canvas-wrap">
                           <canvas id="pdf-canvas" class="pdf-canvas"></canvas>
                         </div>
+                      </div>
+                      <div class="pdf-overlay-controls" aria-label="PDF page controls">
+                        <button id="pdf-prev-btn" class="btn btn-ghost btn-sm pdf-overlay-btn" type="button" aria-label="Previous page">
+                          ◀
+                        </button>
+                        <button id="pdf-next-btn" class="btn btn-ghost btn-sm pdf-overlay-btn" type="button" aria-label="Next page">
+                          ▶
+                        </button>
                       </div>
                       <div id="epub-viewer" class="epub-viewer" aria-label="EPUB view" hidden></div>
                     </div>

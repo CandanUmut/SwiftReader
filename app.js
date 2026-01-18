@@ -190,6 +190,34 @@
     return buffer.slice(0);
   }
 
+  async function coerceToArrayBuffer(data) {
+    if (!data) return null;
+    if (data instanceof ArrayBuffer) return cloneArrayBuffer(data);
+    if (ArrayBuffer.isView(data)) {
+      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    }
+    if (data instanceof Blob && data.arrayBuffer) {
+      return data.arrayBuffer();
+    }
+    if (typeof data === "string") {
+      const trimmed = data.trim();
+      if (!trimmed) return null;
+      try {
+        const base64 = trimmed.startsWith("data:") ? trimmed.split(",")[1] : trimmed;
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes.buffer;
+      } catch (err) {
+        console.warn("Unable to decode stored binary data", err);
+        return null;
+      }
+    }
+    return null;
+  }
+
   function estimateReadMinutes(wordCount, wpm = 300) {
     if (!wordCount || !wpm) return 0;
     return Math.max(1, Math.ceil(wordCount / wpm));
@@ -3568,8 +3596,14 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         showToast({ title: "EPUB support missing", message: "JSZip is required to open EPUB files.", type: "error" });
         return;
       }
+      const epubData = await coerceToArrayBuffer(content.fileData);
+      if (!epubData) {
+        setViewerStatus("Invalid EPUB data stored for this book.");
+        showToast({ title: "EPUB data missing", message: "Try re-importing the file.", type: "error" });
+        return;
+      }
       setViewerStatus("Loading EPUB…");
-      epubState.book = epubLib(cloneArrayBuffer(content.fileData), { openAs: "binary" });
+      epubState.book = epubLib(epubData, { openAs: "binary" });
       await epubState.book.ready;
       epubState.rendition = epubState.book.renderTo(epubViewer, { width: "100%", height: "60vh" });
       await epubState.rendition.display();
