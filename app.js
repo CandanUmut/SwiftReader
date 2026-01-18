@@ -2171,10 +2171,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const trimmed = String(text || "").trim();
     if (!trimmed) return false;
     const compact = trimmed.replace(/\s+/g, "");
-    if (/^\d+$/.test(compact)) return true;
-    if (/^\d+\/\d+$/.test(compact)) return true;
-    if (/^page\s*\d+/i.test(trimmed)) return true;
-    if (/^(page\s*)?[ivxlcdm]+$/i.test(compact)) return true;
+    if (/^[\W_]*\d+[\W_]*$/.test(compact)) return true;
+    if (/^\d+\s*\/\s*\d+$/.test(trimmed)) return true;
+    if (/^page\s*\d+(\s*(of|\/)\s*\d+)?/i.test(trimmed)) return true;
+    if (/^[\W_]*[ivxlcdm]+[\W_]*$/i.test(compact)) return true;
     return false;
   }
 
@@ -2221,11 +2221,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
   function buildPdfStripRules(pages, options = {}) {
     const totalPages = pages.length || 0;
-    const topBand = options.topBand ?? 0.12;
-    const bottomBand = options.bottomBand ?? 0.12;
-    const minPct = options.minFrequency ?? 0.4;
+    const topBand = options.topBand ?? 0.15;
+    const bottomBand = options.bottomBand ?? 0.15;
+    const minPct = options.minFrequency ?? 0.35;
     const minLen = options.minLength ?? 3;
-    const maxLen = options.maxLength ?? 80;
+    const maxLen = options.maxLength ?? 90;
     const lineMap = new Map();
 
     pages.forEach(page => {
