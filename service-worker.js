@@ -6,13 +6,22 @@ const SHELL_ASSETS = [
   "./app.js",
   "./vendor/jszip.min.js",
   "./vendor/epub.min.js",
-  "./manifest.json",
-  "./favicon.ico"
+  "./manifest.json"
 ];
 
 self.addEventListener("install", event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL_ASSETS))
+    caches.open(CACHE_NAME).then(async cache => {
+      const results = await Promise.allSettled(
+        SHELL_ASSETS.map(asset => cache.add(asset))
+      );
+      const failed = results
+        .map((result, index) => (result.status === "rejected" ? SHELL_ASSETS[index] : null))
+        .filter(Boolean);
+      if (failed.length) {
+        console.warn("Service worker precache failed for:", failed);
+      }
+    })
   );
 });
 
