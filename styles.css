@@ -92,9 +92,9 @@ button, input, textarea, select {
   --gap: 16px;
   --gap2: 22px;
 
-  --maxLeft: 14ch;  /* RSVP left segment width */
-  --maxRight: 20ch; /* RSVP right segment width */
-  --rsvpFontSize: 46px;
+  --maxLeft: 18ch;  /* RSVP left segment width */
+  --maxRight: 26ch; /* RSVP right segment width */
+  --rsvpFontSize: 52px;
   --rsvpFontWeight: 700;
   --rsvpPivot: #ff4b55; /* red letter */
 }
@@ -860,6 +860,14 @@ button, input, textarea, select {
   gap: 12px;
 }
 
+#view-reader[data-reader-mode="page"] .reader-stage {
+  display: none;
+}
+
+#view-reader[data-reader-mode="rsvp"] .reader-page {
+  display: none;
+}
+
 .viewer-controls {
   display: flex;
   align-items: center;
@@ -917,22 +925,25 @@ button, input, textarea, select {
 .epub-viewer {
   width: 100%;
   min-height: 220px;
-  height: 60vh;
 }
 
 .pdf-viewer {
   display: grid;
   place-items: center;
+  max-height: 75vh;
+  overflow: auto;
 }
 
 .pdf-canvas {
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: none;
   border-radius: 12px;
   background: var(--card);
 }
 
 .epub-viewer {
+  height: 60vh;
   overflow: auto;
 }
 
@@ -986,8 +997,8 @@ button, input, textarea, select {
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--card2) 92%, transparent);
   border-radius: var(--radius2);
-  padding: 22px 16px;
-  min-height: 220px;
+  padding: 26px 24px;
+  min-height: 240px;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -1017,13 +1028,13 @@ button, input, textarea, select {
   font-size: var(--rsvpFontSize);
   font-weight: var(--rsvpFontWeight);
   letter-spacing: -0.6px;
-  line-height: 1.05;
+  line-height: 1.2;
   user-select: none;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .rsvp-left {
-  width: min(var(--rsvpMaxLeft), 45vw);
+  width: min(var(--rsvpMaxLeft), 50vw);
   min-width: 0;
   text-align: right;
   padding-right: 0.25ch;
@@ -1041,7 +1052,7 @@ button, input, textarea, select {
 }
 
 .rsvp-right {
-  width: min(var(--rsvpMaxRight), 45vw);
+  width: min(var(--rsvpMaxRight), 50vw);
   min-width: 0;
   text-align: left;
   padding-left: 0.25ch;
@@ -1180,9 +1191,9 @@ button, input, textarea, select {
     padding: 12px 20px;
   }
   :root {
-    --rsvpFontSize: 38px;
-    --maxLeft: 12ch;
-    --maxRight: 18ch;
+    --rsvpFontSize: 42px;
+    --maxLeft: 13ch;
+    --maxRight: 20ch;
   }
 
   .page-view {
@@ -1193,17 +1204,17 @@ button, input, textarea, select {
 
 @media (max-width: 480px) {
   :root {
-    --rsvpFontSize: 34px;
-    --maxLeft: 10ch;
-    --maxRight: 14ch;
+    --rsvpFontSize: 36px;
+    --maxLeft: 12ch;
+    --maxRight: 16ch;
   }
 }
 
 @media (max-width: 360px) {
   :root {
-    --rsvpFontSize: 30px;
-    --maxLeft: 8ch;
-    --maxRight: 12ch;
+    --rsvpFontSize: 32px;
+    --maxLeft: 10ch;
+    --maxRight: 14ch;
   }
 }
 
