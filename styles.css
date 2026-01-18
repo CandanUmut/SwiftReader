@@ -78,8 +78,10 @@ button, input, textarea, select {
   --shadow: 0 10px 30px rgba(0,0,0,0.35);
   --focus: #66a6ff;
 
+  /* Subtle accent glow for a more colorful, Apple-like polish. */
   --primary: #4c8dff;
   --primary2: #2f6cf0;
+  --primaryGlow: rgba(76, 141, 255, 0.35);
   --danger: #ff4b55;
   --warning: #ffcc66;
 
@@ -113,6 +115,7 @@ button, input, textarea, select {
 
     --primary: #1f5eff;
     --primary2: #1748c3;
+    --primaryGlow: rgba(31, 94, 255, 0.28);
     --danger: #d92f3a;
     --warning: #9a6b00;
 
@@ -136,6 +139,7 @@ button, input, textarea, select {
 
   --primary: #4c8dff;
   --primary2: #2f6cf0;
+  --primaryGlow: rgba(76, 141, 255, 0.35);
   --danger: #ff4b55;
   --warning: #ffcc66;
 
@@ -157,6 +161,7 @@ button, input, textarea, select {
 
   --primary: #1f5eff;
   --primary2: #1748c3;
+  --primaryGlow: rgba(31, 94, 255, 0.28);
   --danger: #d92f3a;
   --warning: #9a6b00;
 
@@ -176,7 +181,8 @@ button, input, textarea, select {
   justify-content: space-between;
   padding: 14px 18px;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  /* Add a subtle gradient tint to make the header feel more lively without layout changes. */
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg) 86%, transparent), color-mix(in srgb, var(--primary) 12%, transparent));
   backdrop-filter: blur(10px);
 }
 
@@ -356,6 +362,7 @@ button, input, textarea, select {
   background: linear-gradient(180deg, var(--primary), var(--primary2));
   border-color: color-mix(in srgb, var(--primary2) 70%, black 30%);
   color: white;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--primaryGlow) 60%, transparent);
 }
 
 .btn-primary:hover {
@@ -489,6 +496,7 @@ button, input, textarea, select {
 .nav-item.is-active {
   background: color-mix(in srgb, var(--primary) 14%, var(--card));
   border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--primaryGlow) 45%, transparent);
 }
 .nav-icon {
   width: 22px;
@@ -894,6 +902,7 @@ button, input, textarea, select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .viewer-page-input {
@@ -953,8 +962,9 @@ button, input, textarea, select {
   display: block;
   position: relative;
   max-height: 75vh;
-  overflow: hidden;
-  touch-action: none;
+  /* Allow scroll/pan in zoomed PDFs while keeping touch gestures usable. */
+  overflow: auto;
+  touch-action: pan-x pan-y;
   cursor: grab;
 }
 
@@ -965,7 +975,6 @@ button, input, textarea, select {
 .pdf-canvas-wrap {
   display: inline-block;
   transform-origin: 0 0;
-  will-change: transform;
 }
 
 .pdf-canvas {
@@ -989,6 +998,38 @@ button, input, textarea, select {
 .reader-page:fullscreen .pdf-viewer {
   max-height: none;
   height: 70vh;
+}
+
+/* Pseudo-fullscreen for mobile browsers that block the Fullscreen API. */
+body.viewer-fullscreen {
+  overflow: hidden;
+}
+
+body.viewer-fullscreen .app-header,
+body.viewer-fullscreen .sidebar,
+body.viewer-fullscreen .app-footer,
+body.viewer-fullscreen .reader-side {
+  display: none;
+}
+
+body.viewer-fullscreen .reader-shell {
+  grid-template-columns: 1fr;
+}
+
+body.viewer-fullscreen .reader-page {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--bg);
+}
+
+body.viewer-fullscreen .viewer-stage,
+body.viewer-fullscreen .pdf-viewer {
+  max-height: none;
+  height: calc(100vh - 220px);
 }
 
 .epub-viewer {

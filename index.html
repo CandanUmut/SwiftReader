@@ -313,6 +313,16 @@
                       <button id="pdf-fullscreen-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Enter full screen">
                         Full screen
                       </button>
+                      <!-- Added fit/reset buttons to stabilize PDF zoom without changing layout. -->
+                      <button id="pdf-fit-width" class="btn btn-ghost btn-sm" type="button" aria-label="Fit PDF to width">
+                        Fit Width
+                      </button>
+                      <button id="pdf-fit-page" class="btn btn-ghost btn-sm" type="button" aria-label="Fit PDF to page">
+                        Fit Page
+                      </button>
+                      <button id="pdf-zoom-reset" class="btn btn-ghost btn-sm" type="button" aria-label="Reset PDF zoom">
+                        Reset
+                      </button>
                       <button id="pdf-zoom-out" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom out">−</button>
                       <span id="pdf-zoom-label" class="subtle">100%</span>
                       <button id="pdf-zoom-in" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom in">＋</button>
@@ -766,8 +776,9 @@
 
     <script src="https://cdn.jsdelivr.net/npm/idb@7/build/umd.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
-    <script src="./vendor/jszip.min.js"></script>
-    <script src="./vendor/epub.min.js"></script>
+    <!-- Use pinned CDN builds to ensure JSZip loads before epub.js for reliable EPUB import. -->
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
     <script src="./app.js" defer></script>
   </body>
 </html>
