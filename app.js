@@ -2505,7 +2505,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
     const buffer = await file.arrayBuffer();
     const fileData = buffer.slice(0);
-    const loadingTask = pdfjsLib.getDocument({ data: buffer });
+    const loadingTask = pdfjsLib.getDocument({ data: cloneArrayBuffer(buffer) });
     const pdf = await loadingTask.promise;
     const totalPages = pdf.numPages || 0;
     const pages = [];
@@ -2533,6 +2533,28 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return { pages, text: combined, totalPages, fileData };
   }
 
+  function extractEpubTextFromContent(contents) {
+    if (!contents) return "";
+    const doc = contents?.document || contents?.doc || (contents instanceof Document ? contents : null);
+    if (doc?.body) return doc.body.textContent || "";
+    if (doc?.documentElement) return doc.documentElement.textContent || "";
+
+    let raw = contents;
+    if (contents?.text) raw = contents.text;
+    if (contents?.html) raw = contents.html;
+    if (contents instanceof ArrayBuffer) {
+      raw = new TextDecoder().decode(contents);
+    } else if (contents?.buffer instanceof ArrayBuffer) {
+      raw = new TextDecoder().decode(contents.buffer);
+    }
+
+    if (typeof raw === "string") {
+      const parsed = new DOMParser().parseFromString(raw, "text/html");
+      return parsed?.body?.textContent || parsed?.documentElement?.textContent || "";
+    }
+    return "";
+  }
+
   async function extractTextFromEpub(file, onStatus) {
     const epubLib = window.ePub;
     if (!epubLib) {
@@ -2547,7 +2569,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const fileData = cloneArrayBuffer(buffer);
     let book = null;
     try {
-      book = epubLib(buffer);
+      book = epubLib(buffer, { openAs: "binary" });
       await book.ready;
       const metadata = await book.loaded.metadata;
       await book.loaded.spine;
@@ -2569,11 +2591,13 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
               contents = await resolved.load(book.load.bind(book));
             }
           }
+          if (!contents && section?.render) {
+            contents = await section.render(book.load.bind(book));
+          }
         } catch (err) {
           console.warn("EPUB section load failed", err);
         }
-        const doc = contents?.document || contents;
-        const bodyText = doc?.body ? doc.body.textContent : "";
+        const bodyText = extractEpubTextFromContent(contents);
         if (bodyText) chunks.push(sanitizeExtractedText(bodyText));
         if (section?.unload) section.unload();
         if (contents?.unload) contents.unload();
@@ -3507,7 +3531,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
       pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
       setViewerStatus("Loading PDF…");
-      const loadingTask = pdfjsLib.getDocument({ data: content.fileData });
+      const loadingTask = pdfjsLib.getDocument({ data: cloneArrayBuffer(content.fileData) });
       pdfState.doc = await loadingTask.promise;
       pdfState.total = pdfState.doc.numPages || 1;
       pdfState.currentBookId = book.id;
@@ -3545,7 +3569,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         return;
       }
       setViewerStatus("Loading EPUB…");
-      epubState.book = epubLib(content.fileData);
+      epubState.book = epubLib(cloneArrayBuffer(content.fileData), { openAs: "binary" });
       await epubState.book.ready;
       epubState.rendition = epubState.book.renderTo(epubViewer, { width: "100%", height: "60vh" });
       await epubState.rendition.display();
