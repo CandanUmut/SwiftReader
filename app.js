@@ -3,10 +3,11 @@
    Vanilla JS prototype (GitHub Pages friendly)
    - Local-first library (books) + notes
    - RSVP reader with ORP (red pivot letter)
-   - Import: Paste + TXT/MD (EPUB/PDF stubs for later)
+   - Import: Paste + TXT/MD/EPUB/PDF
    - Export/Import JSON
    - Theme toggle (system/light/dark)
    ========================================================= */
+/* Updates: library import focus/scroll, EPUB/PDF import reliability, and live settings application. */
 
 (() => {
   "use strict";
@@ -19,6 +20,11 @@
   const diagnostics = {
     storage: false,
     pdfUpload: false
+  };
+  const DEBUG = false;
+  const debugLog = (...args) => {
+    if (!DEBUG) return;
+    console.info("[SwiftReader][debug]", ...args);
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -491,6 +497,7 @@
   const contentCache = new Map();
   const wordIndexCache = new Map();
   const pageMapCache = new Map();
+  const epubRehydrateAttempts = new Set();
 
   /* ---------------------------
      Storage Model
@@ -821,7 +828,13 @@
         currentPdfPage: typeof b?.readerState?.currentPdfPage === "number" ? b.readerState.currentPdfPage : 1,
         wpm: typeof b?.readerState?.wpm === "number" ? b.readerState.wpm : 300,
         pause: typeof b?.readerState?.pause === "number" ? b.readerState.pause : 80,
-        syncRsvpToPage: !!b?.readerState?.syncRsvpToPage
+        syncRsvpToPage: !!b?.readerState?.syncRsvpToPage,
+        autoRemoveHeadersFooters: b?.readerState?.autoRemoveHeadersFooters !== undefined
+          ? !!b.readerState.autoRemoveHeadersFooters
+          : true,
+        customIgnorePhrases: typeof b?.readerState?.customIgnorePhrases === "string"
+          ? b.readerState.customIgnorePhrases
+          : ""
       },
       stats: {
         openedAt: b?.stats?.openedAt || null,
@@ -1039,6 +1052,9 @@
   const importTitle = $("#import-title");
   const importAuthor = $("#import-author");
   const importTags = $("#import-tags");
+  const importSection = $("#import-section");
+  const importAutoRemoveHeadersCheckbox = $("#import-auto-remove-headers");
+  const importCustomIgnorePhrasesInput = $("#import-custom-ignore-phrases");
   const importConfirmBtn = $("#import-confirm-btn");
   const importClearBtn = $("#import-clear-btn");
   const importStatus = $("#import-status");
@@ -1275,6 +1291,7 @@
     applyThemeFromSettings();
     applyReaderStyleSettings();
     hydrateSettingsUI();
+    syncImportCleanupDefaults();
     initReaderMode();
     runSmokeChecks();
     initDebugHelpers();
@@ -1465,6 +1482,7 @@
     }, "#sync-rsvp-toggle");
 
     on(openLibraryBtn, "click", () => setView("library"), "#open-library-btn");
+    on(addBookBtn, "click", () => openImportSection(), "#add-book-btn");
 
     // Import tabs
     on(tabFile, "click", () => setImportTab("file"), "#tab-file");
@@ -1568,7 +1586,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
               contentExtras: item.contentExtras,
               tokens: item.tokens,
               wordCount: item.wordCount,
-              sourceMeta: item.sourceMeta
+              sourceMeta: item.sourceMeta,
+              readerState: item.readerState
             });
             if (book?.sourceType === "pdf") {
               logPdfDiagnostic("PDF_BEFORE_SAVE_BOOK", { keys: Object.keys(book) });
@@ -1600,7 +1619,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
           contentExtras: item?.contentExtras,
           tokens: item?.tokens,
           wordCount: item?.wordCount,
-          sourceMeta: item?.sourceMeta
+          sourceMeta: item?.sourceMeta,
+          readerState: item?.readerState
         });
 
         if (book?.sourceType === "pdf") {
@@ -1897,6 +1917,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       state.settings.defaultWpm = v;
       wpmSlider.value = String(v);
       wpmValue.textContent = String(v);
+      if (selectedBookId) {
+        updateBookReaderState(selectedBookId, { wpm: v });
+      }
       saveState();
     }, "#default-wpm");
 
@@ -1947,11 +1970,13 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     on(autoRemoveHeadersCheckbox, "change", () => {
       state.settings.autoRemoveHeadersFooters = !!autoRemoveHeadersCheckbox.checked;
       saveState();
+      syncImportCleanupDefaults();
     }, "#auto-remove-headers");
 
     on(customIgnorePhrasesInput, "change", () => {
       state.settings.customIgnorePhrases = customIgnorePhrasesInput.value || "";
       saveState();
+      syncImportCleanupDefaults();
     }, "#custom-ignore-phrases");
 
     // Export/import from settings too
@@ -2066,6 +2091,24 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (panelFile) panelFile.hidden = !isFile;
     if (panelPaste) panelPaste.hidden = isFile;
+  }
+
+  function openImportSection({ focus = true } = {}) {
+    setView("library");
+    const target = importSection || $("#import-section");
+    if (target) {
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+    if (!focus) return;
+    window.setTimeout(() => {
+      if (tabPaste?.classList.contains("is-active")) {
+        pasteText?.focus();
+      } else {
+        fileDrop?.focus();
+      }
+    }, 220);
   }
 
   /* ---------------------------
@@ -2261,8 +2304,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     let fam = "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
     if (state.settings.fontFamily === "serif") fam = "ui-serif, Georgia, Cambria, Times New Roman, Times, serif";
     if (state.settings.fontFamily === "mono") fam = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace";
-    const rsvpWord = $("#rsvp-word");
-    if (rsvpWord) rsvpWord.style.fontFamily = fam;
+    root.style.setProperty("--readerFontFamily", fam);
     scheduleRsvpFit();
   }
 
@@ -2283,6 +2325,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (customIgnorePhrasesInput) customIgnorePhrasesInput.value = state.settings.customIgnorePhrases || "";
 
     if (pauseSlider) pauseSlider.value = String(state.settings.punctuationPause ?? 80);
+    syncImportCleanupDefaults();
   }
 
   async function requestWakeLock() {
@@ -2349,6 +2392,29 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   function setPasteStatus(message) {
     if (!pasteStatus) return;
     pasteStatus.textContent = message || "";
+  }
+
+  function syncImportCleanupDefaults() {
+    if (importAutoRemoveHeadersCheckbox) {
+      importAutoRemoveHeadersCheckbox.checked = !!state.settings.autoRemoveHeadersFooters;
+    }
+    if (importCustomIgnorePhrasesInput) {
+      importCustomIgnorePhrasesInput.value = state.settings.customIgnorePhrases || "";
+    }
+  }
+
+  function getImportPdfCleanupOptions() {
+    const enabled = importAutoRemoveHeadersCheckbox
+      ? !!importAutoRemoveHeadersCheckbox.checked
+      : !!state.settings.autoRemoveHeadersFooters;
+    const rawCustom = importCustomIgnorePhrasesInput
+      ? importCustomIgnorePhrasesInput.value || ""
+      : state.settings.customIgnorePhrases || "";
+    return {
+      enabled,
+      customPhrases: parseCustomIgnorePhrases(rawCustom),
+      customIgnoreRaw: rawCustom
+    };
   }
 
   function normalizeLineForMatch(text) {
@@ -2583,18 +2649,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return "";
   }
 
-  async function extractTextFromEpub(file, onStatus) {
+  async function extractTextFromEpubBuffer(buffer, onStatus) {
     const epubLib = window.ePub;
     if (!epubLib) {
       throw new Error("epub.js not available");
     }
-    if (!window.JSZip) {
-      onStatus?.("EPUB support missing (JSZip not loaded).");
-      showToast({ title: "EPUB support missing", message: "JSZip is required to import EPUB files.", type: "error" });
-      return { title: "", text: "", fileData: null };
-    }
-    const buffer = await file.arrayBuffer();
-    const fileData = cloneArrayBuffer(buffer);
     let book = null;
     try {
       book = epubLib(buffer, { openAs: "binary" });
@@ -2602,6 +2661,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const metadata = await book.loaded.metadata;
       await book.loaded.spine;
       const sections = book.spine?.spineItems || book.spine?.items || [];
+      debugLog("EPUB sections", { count: sections.length });
       const chunks = [];
 
       for (let i = 0; i < sections.length; i += 1) {
@@ -2626,25 +2686,45 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
           console.warn("EPUB section load failed", err);
         }
         const bodyText = extractEpubTextFromContent(contents);
-        if (bodyText) chunks.push(sanitizeExtractedText(bodyText));
+        if (bodyText) {
+          const cleaned = sanitizeExtractedText(bodyText);
+          if (cleaned) chunks.push(cleaned);
+          debugLog("EPUB section text", {
+            index: i,
+            length: cleaned.length
+          });
+        }
         if (section?.unload) section.unload();
         if (contents?.unload) contents.unload();
         await sleep(0);
       }
 
+      const text = chunks.join("\n\n");
+      debugLog("EPUB extracted", { length: text.length });
       return {
         title: metadata?.title || "",
-        text: chunks.join("\n\n"),
-        fileData
+        text
       };
     } catch (err) {
       console.warn("EPUB text extraction failed", err);
-      return { title: "", text: "", fileData };
+      return { title: "", text: "" };
     } finally {
       if (book?.destroy) {
         book.destroy();
       }
     }
+  }
+
+  async function extractTextFromEpub(file, onStatus) {
+    if (!window.JSZip) {
+      onStatus?.("EPUB support missing (JSZip not loaded).");
+      showToast({ title: "EPUB support missing", message: "JSZip is required to import EPUB files.", type: "error" });
+      return { title: "", text: "", fileData: null };
+    }
+    const buffer = await file.arrayBuffer();
+    const fileData = cloneArrayBuffer(buffer);
+    const { title, text } = await extractTextFromEpubBuffer(buffer, onStatus);
+    return { title, text, fileData };
   }
   async function parseImportFile(file, index, total) {
     const name = file.name || "Untitled";
@@ -2692,11 +2772,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
           showToast({ title: "No text found", message: "This PDF may be scanned or image-based.", type: "error" });
           return null;
         }
-        const stripOptions = {
-          enabled: state.settings.autoRemoveHeadersFooters,
-          customPhrases: parseCustomIgnorePhrases(state.settings.customIgnorePhrases)
-        };
-        const { text: strippedText, tokens, wordCount, pageRanges } = buildPdfContentFromPages(result.pages || [], stripOptions);
+        const cleanupOptions = getImportPdfCleanupOptions();
+        const { text: strippedText, tokens, wordCount, pageRanges } = buildPdfContentFromPages(result.pages || [], cleanupOptions);
         return {
           file,
           text: normalizeText(strippedText || text),
@@ -2710,6 +2787,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
             fileType: file.type || "application/pdf",
             pageRanges,
             pdfTotalPages: totalPages
+          },
+          readerState: {
+            autoRemoveHeadersFooters: cleanupOptions.enabled,
+            customIgnorePhrases: cleanupOptions.customIgnoreRaw
           }
         };
       } catch (err) {
@@ -2733,22 +2814,19 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         return null;
       }
       const { text, title, fileData } = await extractTextFromEpub(file, status => setImportStatus(status));
-      if (!text || text.length < 40) {
-        if (!fileData) {
-          setImportStatus("No readable text found in EPUB.");
-          showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
-          return null;
-        }
-        setImportStatus("EPUB text extraction failed.");
-        showToast({
-          title: "Limited EPUB import",
-          message: "Text extraction failed, but the EPUB viewer should still work.",
-          type: "warning"
-        });
+      const normalizedEpubText = normalizeText(text);
+      debugLog("EPUB extraction result", {
+        title: title || baseTitle,
+        length: normalizedEpubText.length
+      });
+      if (!normalizedEpubText || normalizedEpubText.length < 40) {
+        setImportStatus("No readable text found in EPUB.");
+        showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
+        return null;
       }
       return {
         file,
-        text: normalizeText(text),
+        text: normalizedEpubText,
         sourceType: "epub",
         suggestedTitle: title || baseTitle,
         sourceMeta,
@@ -2810,12 +2888,31 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     importTags.value = "";
     importBuffer = { files: [], items: [], text: "", sourceType: null, suggestedTitle: "" };
     setImportStatus("");
+    syncImportCleanupDefaults();
   }
 
-  async function createBookFromText({ title, author, tags, text, sourceType, contentExtras, tokens: tokenOverride, wordCount: wordCountOverride, sourceMeta }) {
+  async function createBookFromText({
+    title,
+    author,
+    tags,
+    text,
+    sourceType,
+    contentExtras,
+    tokens: tokenOverride,
+    wordCount: wordCountOverride,
+    sourceMeta,
+    readerState
+  }) {
     const normalizedText = normalizeText(text);
     const tokens = Array.isArray(tokenOverride) ? tokenOverride : tokenize(normalizedText);
     const wc = typeof wordCountOverride === "number" ? wordCountOverride : countWords(tokens);
+    const baseReaderState = {
+      currentWordIndex: 0,
+      currentPdfPage: 1,
+      wpm: state.settings.defaultWpm || 300,
+      pause: state.settings.punctuationPause ?? 80,
+      syncRsvpToPage: false
+    };
     const book = {
       id: uid("book"),
       title: title || "Untitled",
@@ -2835,9 +2932,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       tokenCount: tokens.length,
       contentStored: "idb",
       progress: { index: 0, updatedAt: nowISO(), bookmarks: [] },
+      readerState: { ...baseReaderState, ...(readerState || {}) },
       stats: { openedAt: null, lastSessionAt: null, totalReadWords: 0 }
     };
     await persistBookContentToIdb(book.id, normalizedText, tokens, contentExtras || {});
+    if (sourceType === "epub") {
+      debugLog("EPUB saved", {
+        bookId: book.id,
+        textLength: normalizedText.length,
+        tokenCount: tokens.length
+      });
+    }
     return book;
   }
 
@@ -2851,6 +2956,49 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     // Try IndexedDB first
     if (idbReady) {
       const content = await idbGet(DB_STORES.contents, bookId);
+      if (content) {
+        if ((!content.rawText || !content.rawText.trim()) && (!content.tokens || !content.tokens.length)
+          && book.sourceType === "epub"
+          && content.fileData
+          && !epubRehydrateAttempts.has(bookId)) {
+          epubRehydrateAttempts.add(bookId);
+          try {
+            if (!window.ePub || !window.JSZip) {
+              debugLog("EPUB rehydrate skipped (missing libs)", { bookId });
+            } else {
+              const epubBuffer = await coerceToArrayBuffer(content.fileData);
+              if (epubBuffer) {
+                debugLog("EPUB rehydrate attempt", { bookId });
+                const { text } = await extractTextFromEpubBuffer(epubBuffer);
+                const normalized = normalizeText(text);
+                if (normalized && normalized.length > 40) {
+                  const recoveredTokens = tokenize(normalized);
+                  const extras = { ...content };
+                  delete extras.bookId;
+                  delete extras.rawText;
+                  delete extras.tokens;
+                  delete extras.tokenCount;
+                  delete extras.updatedAt;
+                  await persistBookContentToIdb(bookId, normalized, recoveredTokens, extras);
+                  upsertBook({
+                    ...book,
+                    wordCount: countWords(recoveredTokens),
+                    tokenCount: recoveredTokens.length
+                  });
+                } else {
+                  debugLog("EPUB rehydrate empty", { bookId, length: normalized.length });
+                }
+              }
+            }
+          } catch (err) {
+            console.warn("EPUB rehydrate failed", err);
+          }
+        }
+      }
+      const cachedAfterRehydrate = contentCache.get(bookId);
+      if (cachedAfterRehydrate && (cachedAfterRehydrate.rawText || cachedAfterRehydrate.tokens?.length)) {
+        return cachedAfterRehydrate;
+      }
       if (content && (content.rawText || content.tokens?.length)) {
         const merged = mergePunctuationTokens(content.tokens || []);
         if (merged.changed) {
@@ -5080,13 +5228,12 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
   }
 
   /* ---------------------------
-     Compatibility: unused buttons in HTML
-     (Add Book just opens library import area)
+     Smoke Test Checklist (manual)
+     1) Library: click Add Book → auto-scrolls to Import, focus follows active tab.
+     2) EPUB: import EPUB → book stays in library → open reader → text present → refresh → text still present.
+     3) PDF: import PDF with running headers → headers removed in RSVP output.
+     4) Settings: change Default WPM + Font + Auto-pause → reader updates immediately and persists on refresh.
+     5) Mobile: tap left/right/center on RSVP with Tap controls enabled.
   --------------------------- */
-  bind(addBookBtn, "click", () => {
-    // Focus on import area
-    setView("library");
-    importTitle?.focus();
-  }, "#add-book-btn");
 
 })();
