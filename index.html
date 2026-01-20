@@ -102,7 +102,68 @@
             </div>
           </div>
 
-          <div class="grid grid-2">
+          <div class="grid library-layout">
+            <section class="card" aria-label="Library list">
+              <div class="card-header">
+                <h2 class="h2">Your books</h2>
+                <div class="card-header-actions">
+                  <div class="search">
+                    <span class="search-icon" aria-hidden="true">⌕</span>
+                    <input id="library-search" class="search-input" type="search" placeholder="Search title, author, tags…" />
+                  </div>
+                  <select id="library-sort" class="select" aria-label="Sort books">
+                    <option value="recent">Recently opened</option>
+                    <option value="added">Recently added</option>
+                    <option value="title">Title (A–Z)</option>
+                    <option value="author">Author (A–Z)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="card-body">
+                <div id="library-empty" class="empty-state">
+                  <div class="empty-title">No books yet</div>
+                  <div class="empty-text">
+                    Import a file or paste text to create your first book.
+                  </div>
+                  <div class="empty-actions">
+                    <button id="empty-demo-btn" class="btn btn-primary" type="button">Load Demo</button>
+                    <button id="empty-paste-btn" class="btn btn-secondary" type="button">Paste Text</button>
+                  </div>
+                  <button id="empty-help-btn" class="btn btn-ghost" type="button">Learn how it works</button>
+                </div>
+
+                <ul id="book-list" class="book-list" aria-label="Books list">
+                  <!-- JS will render book cards here -->
+                  <!--
+                  <li class="book-item">
+                    <button class="book-card" type="button">
+                      <div class="book-meta">
+                        <div class="book-title">Example Book</div>
+                        <div class="book-sub">Author • 12 min read</div>
+                        <div class="book-tags">
+                          <span class="tag">habits</span>
+                          <span class="tag">focus</span>
+                        </div>
+                      </div>
+                      <div class="book-progress">
+                        <div class="progress-label">34%</div>
+                        <div class="progress-bar"><div class="progress-fill" style="width:34%"></div></div>
+                      </div>
+                    </button>
+                  </li>
+                  -->
+                </ul>
+              </div>
+
+              <div class="card-footer">
+                <div class="subtle">Storage: <span id="storage-estimate">—</span></div>
+                <button id="danger-reset-btn" class="btn btn-danger btn-sm" type="button">
+                  Reset Local Data
+                </button>
+              </div>
+            </section>
+
             <section class="card" aria-label="Import">
               <div class="card-header">
                 <h2 class="h2">Import</h2>
@@ -190,67 +251,6 @@
                     Your pasted text stays only in your browser storage (unless you export).
                   </div>
                 </div>
-              </div>
-            </section>
-
-            <section class="card" aria-label="Library list">
-              <div class="card-header">
-                <h2 class="h2">Your books</h2>
-                <div class="card-header-actions">
-                  <div class="search">
-                    <span class="search-icon" aria-hidden="true">⌕</span>
-                    <input id="library-search" class="search-input" type="search" placeholder="Search title, author, tags…" />
-                  </div>
-                  <select id="library-sort" class="select" aria-label="Sort books">
-                    <option value="recent">Recently opened</option>
-                    <option value="added">Recently added</option>
-                    <option value="title">Title (A–Z)</option>
-                    <option value="author">Author (A–Z)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="card-body">
-                <div id="library-empty" class="empty-state">
-                  <div class="empty-title">No books yet</div>
-                  <div class="empty-text">
-                    Import a file or paste text to create your first book.
-                  </div>
-                  <div class="empty-actions">
-                    <button id="empty-demo-btn" class="btn btn-primary" type="button">Load Demo</button>
-                    <button id="empty-paste-btn" class="btn btn-secondary" type="button">Paste Text</button>
-                  </div>
-                  <button id="empty-help-btn" class="btn btn-ghost" type="button">Learn how it works</button>
-                </div>
-
-                <ul id="book-list" class="book-list" aria-label="Books list">
-                  <!-- JS will render book cards here -->
-                  <!--
-                  <li class="book-item">
-                    <button class="book-card" type="button">
-                      <div class="book-meta">
-                        <div class="book-title">Example Book</div>
-                        <div class="book-sub">Author • 12 min read</div>
-                        <div class="book-tags">
-                          <span class="tag">habits</span>
-                          <span class="tag">focus</span>
-                        </div>
-                      </div>
-                      <div class="book-progress">
-                        <div class="progress-label">34%</div>
-                        <div class="progress-bar"><div class="progress-fill" style="width:34%"></div></div>
-                      </div>
-                    </button>
-                  </li>
-                  -->
-                </ul>
-              </div>
-
-              <div class="card-footer">
-                <div class="subtle">Storage: <span id="storage-estimate">—</span></div>
-                <button id="danger-reset-btn" class="btn btn-danger btn-sm" type="button">
-                  Reset Local Data
-                </button>
               </div>
             </section>
           </div>
