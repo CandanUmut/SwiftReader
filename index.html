@@ -298,23 +298,17 @@
                   </div>
                   <div class="viewer-controls" aria-label="Viewer controls">
                     <div class="viewer-nav">
-                      <button id="pdf-first-btn" class="btn btn-ghost btn-sm" type="button" aria-label="First page">
-                        ⏮
+                      <button id="pdf-prev-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Previous page">
+                        ◀
                       </button>
                       <div class="viewer-page-input">
                         <label class="sr-only" for="pdf-page-input">Page number</label>
                         <input id="pdf-page-input" class="input input-xs" type="number" min="1" value="1" inputmode="numeric" />
                         <span class="viewer-page-total">/ <span id="pdf-page-total">1</span></span>
-                        <button id="pdf-go-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Go to page">
-                          Go
-                        </button>
                       </div>
-                      <button id="pdf-last-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Last page">
-                        ⏭
+                      <button id="pdf-next-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Next page">
+                        ▶
                       </button>
-                    </div>
-                    <div class="viewer-scrub">
-                      <input id="pdf-page-slider" class="range range-xs" type="range" min="1" max="1" value="1" step="1" aria-label="Page scrubber" />
                     </div>
                     <div class="viewer-zoom">
                       <button id="pdf-fullscreen-btn" class="btn btn-ghost btn-sm" type="button" aria-label="Enter full screen">
@@ -327,15 +321,12 @@
                       <button id="pdf-fit-page" class="btn btn-ghost btn-sm" type="button" aria-label="Fit PDF to page">
                         Fit Page
                       </button>
-                      <button id="pdf-zoom-reset" class="btn btn-ghost btn-sm" type="button" aria-label="Reset PDF zoom">
-                        Reset
-                      </button>
                       <button id="pdf-zoom-out" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom out">−</button>
                       <span id="pdf-zoom-label" class="subtle">100%</span>
                       <button id="pdf-zoom-in" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom in">＋</button>
                     </div>
                     <label class="checkbox viewer-sync">
-                      <input id="sync-rsvp-toggle" type="checkbox" />
+                      <input id="sync-rsvp-toggle" type="checkbox" checked />
                       <span>Sync RSVP to page</span>
                     </label>
                   </div>
@@ -349,14 +340,6 @@
                         <div id="pdf-canvas-wrap" class="pdf-canvas-wrap">
                           <canvas id="pdf-canvas" class="pdf-canvas"></canvas>
                         </div>
-                      </div>
-                      <div class="pdf-overlay-controls" aria-label="PDF page controls">
-                        <button id="pdf-prev-btn" class="btn btn-ghost btn-sm pdf-overlay-btn" type="button" aria-label="Previous page">
-                          ◀
-                        </button>
-                        <button id="pdf-next-btn" class="btn btn-ghost btn-sm pdf-overlay-btn" type="button" aria-label="Next page">
-                          ▶
-                        </button>
                       </div>
                       <div id="epub-viewer" class="epub-viewer" aria-label="EPUB view" hidden></div>
                     </div>
@@ -411,63 +394,57 @@
                   </div>
 
                   <div class="reader-controls" aria-label="Reader controls">
-                    <button id="btn-back-sent" class="btn btn-ghost" type="button" title="Back sentence">
-                      ⟲ Sent
+                    <button id="btn-back-sent" class="btn btn-ghost btn-icon" type="button" title="Back to sentence start" aria-label="Back to sentence start">
+                      ⟲
                     </button>
-                  <button id="btn-back" class="btn btn-ghost" type="button" title="Back 3 words">
-                    ⟲ 3
-                  </button>
 
-                  <button id="btn-play" class="btn btn-primary btn-wide" type="button" aria-pressed="false">
-                    ▶ Play
-                  </button>
+                    <button id="btn-play" class="btn btn-primary btn-wide" type="button" aria-pressed="false">
+                      ▶ Play
+                    </button>
 
-                  <button id="btn-forward" class="btn btn-ghost" type="button" title="Forward 3 words">
-                    3 ⟳
-                  </button>
-                  <button id="btn-forward-sent" class="btn btn-ghost" type="button" title="Forward sentence">
-                    Sent ⟳
-                  </button>
-                </div>
+                    <button id="btn-forward-sent" class="btn btn-ghost btn-icon" type="button" title="Jump to next sentence" aria-label="Jump to next sentence">
+                      ⟳
+                    </button>
+                  </div>
 
-                <div class="reader-sliders" aria-label="Speed and pause controls">
-                  <div class="slider-row">
-                    <label class="label" for="wpm-slider">Speed (WPM)</label>
-                    <input id="wpm-slider" class="range" type="range" min="150" max="1200" value="300" step="10" />
-                    <div class="slider-meta">
-                      <span class="subtle">150</span>
-                      <span class="subtle">1200</span>
+                  <div class="reader-sliders" aria-label="Speed and pause controls">
+                    <div class="slider-row">
+                      <label class="label" for="wpm-slider">Speed (WPM)</label>
+                      <input id="wpm-slider" class="range" type="range" min="150" max="1200" value="300" step="10" />
+                      <div class="slider-meta">
+                        <span class="subtle">150</span>
+                        <span class="subtle">1200</span>
+                      </div>
+                    </div>
+
+                    <div class="slider-row">
+                      <label class="label" for="pause-slider">Punctuation pauses</label>
+                      <input id="pause-slider" class="range" type="range" min="0" max="200" value="80" step="5" />
+                      <div class="slider-meta">
+                        <span class="subtle">None</span>
+                        <span class="subtle">More</span>
+                      </div>
                     </div>
                   </div>
 
-                  <div class="slider-row">
-                    <label class="label" for="pause-slider">Punctuation pauses</label>
-                    <input id="pause-slider" class="range" type="range" min="0" max="200" value="80" step="5" />
-                    <div class="slider-meta">
-                      <span class="subtle">None</span>
-                      <span class="subtle">More</span>
+                  <div class="reader-stats" aria-label="Session stats">
+                    <div class="stat">
+                      <div class="stat-label">Session</div>
+                      <div id="stat-session" class="stat-value">00:00</div>
+                    </div>
+                    <div class="stat">
+                      <div class="stat-label">Words</div>
+                      <div id="stat-words" class="stat-value">0</div>
+                    </div>
+                    <div class="stat">
+                      <div class="stat-label">Avg WPM</div>
+                      <div id="stat-avgwpm" class="stat-value">—</div>
+                    </div>
+                    <div class="stat">
+                      <div class="stat-label">Pauses</div>
+                      <div id="stat-pauses" class="stat-value">0</div>
                     </div>
                   </div>
-                </div>
-
-                <div class="reader-stats" aria-label="Session stats">
-                  <div class="stat">
-                    <div class="stat-label">Session</div>
-                    <div id="stat-session" class="stat-value">00:00</div>
-                  </div>
-                  <div class="stat">
-                    <div class="stat-label">Words</div>
-                    <div id="stat-words" class="stat-value">0</div>
-                  </div>
-                  <div class="stat">
-                    <div class="stat-label">Avg WPM</div>
-                    <div id="stat-avgwpm" class="stat-value">—</div>
-                  </div>
-                  <div class="stat">
-                    <div class="stat-label">Pauses</div>
-                    <div id="stat-pauses" class="stat-value">0</div>
-                  </div>
-                </div>
               </div>
 
               <div class="card-footer reader-footer">

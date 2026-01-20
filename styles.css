@@ -388,6 +388,10 @@ button, input, textarea, select {
 .btn-icon {
   padding: 8px 10px;
   border-radius: 12px;
+  min-width: 44px;
+  min-height: 44px;
+  justify-content: center;
+  font-size: 18px;
 }
 
 .btn-wide {
@@ -758,6 +762,25 @@ button, input, textarea, select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.book-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.book-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  white-space: nowrap;
 }
 
 .book-sub {
@@ -983,6 +1006,7 @@ button, input, textarea, select {
   overflow: auto;
   touch-action: pan-x pan-y;
   cursor: grab;
+  overscroll-behavior: contain;
 }
 
 .pdf-viewer.is-dragging {
@@ -1038,6 +1062,27 @@ button, input, textarea, select {
   overflow: auto;
 }
 
+.reader-page:fullscreen .reader-page-header,
+body.viewer-fullscreen .reader-page-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  background: var(--bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.reader-page:fullscreen .viewer-controls,
+body.viewer-fullscreen .viewer-controls {
+  width: 100%;
+  justify-content: space-between;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
 .reader-page:fullscreen .viewer-stage {
   max-height: none;
 }
@@ -1077,6 +1122,10 @@ body.viewer-fullscreen .viewer-stage,
 body.viewer-fullscreen .pdf-viewer {
   max-height: none;
   height: calc(100vh - 160px);
+}
+
+body.viewer-fullscreen .viewer-stage {
+  padding-bottom: 8px;
 }
 
 .epub-viewer {
@@ -1134,7 +1183,7 @@ body.viewer-fullscreen .pdf-viewer {
 .rsvp-frame {
   position: relative;
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--card2) 92%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--card2) 94%, white 6%), color-mix(in srgb, var(--card2) 92%, transparent));
   border-radius: var(--radius2);
   padding: 36px 32px;
   min-height: 320px;
@@ -1142,11 +1191,13 @@ body.viewer-fullscreen .pdf-viewer {
   place-items: center;
   overflow: hidden;
   max-width: 100%;
+  width: 100%;
   margin: 0 auto;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   --rsvpMaxLeft: var(--maxLeft);
   --rsvpMaxRight: var(--maxRight);
+  --rsvpWordScale: 1;
 }
 
 .pivot-line {
@@ -1173,11 +1224,16 @@ body.viewer-fullscreen .pdf-viewer {
   line-height: 1.2;
   user-select: none;
   overflow: visible;
+  white-space: nowrap;
+  transform: scale(var(--rsvpWordScale));
+  transform-origin: center;
+  will-change: transform;
 }
 
 .rsvp-left {
   width: min(var(--rsvpMaxLeft), 50vw);
   min-width: 0;
+  flex: 0 0 auto;
   text-align: right;
   padding-right: 0.25ch;
   opacity: 0.95;
@@ -1196,6 +1252,7 @@ body.viewer-fullscreen .pdf-viewer {
 .rsvp-right {
   width: min(var(--rsvpMaxRight), 50vw);
   min-width: 0;
+  flex: 0 0 auto;
   text-align: left;
   padding-left: 0.25ch;
   opacity: 0.95;
