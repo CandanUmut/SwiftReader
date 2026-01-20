@@ -815,6 +815,7 @@
       wordCount: typeof b?.wordCount === "number" ? b.wordCount : 0,
       tokenCount: typeof b?.tokenCount === "number" ? b.tokenCount : (Array.isArray(b?.tokens) ? b.tokens.length : 0),
       contentStored: b?.contentStored || (b?.text ? "local" : "idb"),
+      importError: b?.importError || null,
       progress: {
         index: typeof b?.progress?.index === "number" ? b.progress.index : 0,
         wordIndex: typeof b?.progress?.wordIndex === "number" ? b.progress.wordIndex : (b?.progress?.index ?? 0),
@@ -828,7 +829,9 @@
         currentPdfPage: typeof b?.readerState?.currentPdfPage === "number" ? b.readerState.currentPdfPage : 1,
         wpm: typeof b?.readerState?.wpm === "number" ? b.readerState.wpm : 300,
         pause: typeof b?.readerState?.pause === "number" ? b.readerState.pause : 80,
-        syncRsvpToPage: !!b?.readerState?.syncRsvpToPage,
+        syncRsvpToPage: b?.readerState?.syncRsvpToPage !== undefined
+          ? !!b.readerState.syncRsvpToPage
+          : true,
         autoRemoveHeadersFooters: b?.readerState?.autoRemoveHeadersFooters !== undefined
           ? !!b.readerState.autoRemoveHeadersFooters
           : true,
@@ -1094,18 +1097,13 @@
   const pdfViewer = $("#pdf-viewer");
   const pdfCanvasWrap = $("#pdf-canvas-wrap");
   const pdfCanvas = $("#pdf-canvas");
-  const pdfFirstBtn = $("#pdf-first-btn");
   const pdfPrevBtn = $("#pdf-prev-btn");
   const pdfNextBtn = $("#pdf-next-btn");
-  const pdfLastBtn = $("#pdf-last-btn");
   const pdfPageInput = $("#pdf-page-input");
   const pdfPageTotal = $("#pdf-page-total");
-  const pdfGoBtn = $("#pdf-go-btn");
-  const pdfPageSlider = $("#pdf-page-slider");
   const pdfFullscreenBtn = $("#pdf-fullscreen-btn");
   const pdfFitWidthBtn = $("#pdf-fit-width");
   const pdfFitPageBtn = $("#pdf-fit-page");
-  const pdfZoomResetBtn = $("#pdf-zoom-reset");
   const pdfZoomInBtn = $("#pdf-zoom-in");
   const pdfZoomOutBtn = $("#pdf-zoom-out");
   const pdfZoomLabel = $("#pdf-zoom-label");
@@ -1121,9 +1119,7 @@
   const rsvpFrame = $(".rsvp-frame");
 
   const btnBackSent = $("#btn-back-sent");
-  const btnBack = $("#btn-back");
   const btnPlay = $("#btn-play");
-  const btnForward = $("#btn-forward");
   const btnForwardSent = $("#btn-forward-sent");
   const btnMark = $("#btn-mark");
   const btnAddNote = $("#btn-add-note");
@@ -1202,7 +1198,6 @@
   let pendingScrubValue = null;
   let pdfSyncTimer = null;
   let pdfSyncTarget = null;
-  let pdfScrubTimer = null;
   let fatalBanner = null;
   let bootBindings = { attempted: 0, bound: 0 };
 
@@ -1415,13 +1410,10 @@
       bindings.attempted += 1;
     }
 
-    on(pdfFirstBtn, "click", () => setPdfPage(1, { userInitiated: true }), "#pdf-first-btn");
     on(pdfPrevBtn, "click", () => jumpPdfPage(-1), "#pdf-prev-btn");
     on(pdfNextBtn, "click", () => jumpPdfPage(1), "#pdf-next-btn");
-    on(pdfLastBtn, "click", () => setPdfPage(pdfState.total || 1, { userInitiated: true }), "#pdf-last-btn");
     on(pdfFitWidthBtn, "click", () => setPdfFitMode("width"), "#pdf-fit-width");
     on(pdfFitPageBtn, "click", () => setPdfFitMode("page"), "#pdf-fit-page");
-    on(pdfZoomResetBtn, "click", () => resetPdfZoom(), "#pdf-zoom-reset");
     on(pdfZoomInBtn, "click", () => adjustPdfZoom(0.1), "#pdf-zoom-in");
     on(pdfZoomOutBtn, "click", () => adjustPdfZoom(-0.1), "#pdf-zoom-out");
     const applyPdfPageInput = () => {
@@ -1441,28 +1433,6 @@
       pdfPageInput.blur();
     }, "#pdf-page-input");
     on(pdfPageInput, "blur", () => applyPdfPageInput(), "#pdf-page-input");
-    on(pdfGoBtn, "click", () => applyPdfPageInput(), "#pdf-go-btn");
-    on(pdfPageSlider, "input", () => {
-      if (!pdfPageSlider) return;
-      const value = Number(pdfPageSlider.value);
-      if (!Number.isFinite(value)) return;
-      if (pdfPageInput) pdfPageInput.value = String(value);
-      if (pdfScrubTimer) clearTimeout(pdfScrubTimer);
-      pdfScrubTimer = setTimeout(() => {
-        pdfScrubTimer = null;
-        setPdfPage(value, { userInitiated: true });
-      }, 120);
-    }, "#pdf-page-slider");
-    on(pdfPageSlider, "change", () => {
-      if (!pdfPageSlider) return;
-      const value = Number(pdfPageSlider.value);
-      if (!Number.isFinite(value)) return;
-      if (pdfScrubTimer) {
-        clearTimeout(pdfScrubTimer);
-        pdfScrubTimer = null;
-      }
-      setPdfPage(value, { userInitiated: true });
-    }, "#pdf-page-slider");
 
     on(syncRsvpToggle, "change", () => {
       const book = selectedBookId ? getBook(selectedBookId) : null;
@@ -1587,7 +1557,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
               tokens: item.tokens,
               wordCount: item.wordCount,
               sourceMeta: item.sourceMeta,
-              readerState: item.readerState
+              readerState: item.readerState,
+              importError: item.importError
             });
             if (book?.sourceType === "pdf") {
               logPdfDiagnostic("PDF_BEFORE_SAVE_BOOK", { keys: Object.keys(book) });
@@ -1620,7 +1591,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
           tokens: item?.tokens,
           wordCount: item?.wordCount,
           sourceMeta: item?.sourceMeta,
-          readerState: item?.readerState
+          readerState: item?.readerState,
+          importError: item?.importError
         });
 
         if (book?.sourceType === "pdf") {
@@ -1712,8 +1684,6 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     // Reader controls
     on(btnPlay, "click", () => togglePlay(), "#btn-play");
-    on(btnBack, "click", () => stepWords(-3), "#btn-back");
-    on(btnForward, "click", () => stepWords(+3), "#btn-forward");
     on(btnBackSent, "click", () => stepSentence(-1), "#btn-back-sent");
     on(btnForwardSent, "click", () => stepSentence(+1), "#btn-forward-sent");
     on(btnMark, "click", () => addBookmark(), "#btn-mark");
@@ -2436,6 +2406,24 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       .filter(Boolean);
   }
 
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function removeCustomIgnorePhrases(text, phrases) {
+    if (!text) return "";
+    if (!Array.isArray(phrases) || phrases.length === 0) return text;
+    let cleaned = String(text);
+    phrases.forEach(phrase => {
+      const parts = String(phrase).match(/[\p{L}\p{N}]+/gu);
+      if (!parts || !parts.length) return;
+      const pattern = parts.map(part => escapeRegExp(part)).join("[\\s\\W_]*");
+      const regex = new RegExp(pattern, "gi");
+      cleaned = cleaned.replace(regex, " ");
+    });
+    return cleaned;
+  }
+
   function isPageNumberLike(text) {
     const trimmed = String(text || "").trim();
     if (!trimmed) return false;
@@ -2567,7 +2555,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
   function buildPdfContentFromPages(pages, options = {}) {
     const { pageTexts } = stripPdfHeadersFooters(pages, options);
-    const tokensByPage = pageTexts.map(text => tokenize(text));
+    const customPhrases = Array.isArray(options.customPhrases) ? options.customPhrases : [];
+    const sanitizedPageTexts = pageTexts.map(text => normalizeText(removeCustomIgnorePhrases(text, customPhrases)));
+    const tokensByPage = sanitizedPageTexts.map(text => tokenize(text));
     const wordCounts = tokensByPage.map(tokens => countWords(tokens));
     let cursor = 0;
     const pageRanges = wordCounts.map((wordCount, idx) => {
@@ -2581,7 +2571,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         wordCount
       };
     });
-    const combinedText = pageTexts.join("\n\n");
+    const combinedText = sanitizedPageTexts.join("\n\n");
     const combinedTokens = tokensByPage.flat();
     return {
       text: combinedText,
@@ -2649,7 +2639,20 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     return "";
   }
 
-  async function extractTextFromEpubBuffer(buffer, onStatus) {
+  const MIN_EPUB_TEXT_LENGTH = 200;
+
+  async function detectEpubProtection(buffer) {
+    if (!window.JSZip) return false;
+    try {
+      const zip = await window.JSZip.loadAsync(buffer);
+      return !!(zip.file("META-INF/encryption.xml") || zip.file("META-INF/rights.xml"));
+    } catch (err) {
+      console.warn("EPUB protection check failed", err);
+      return false;
+    }
+  }
+
+  async function extractTextFromEpubBuffer(buffer, onStatus, options = {}) {
     const epubLib = window.ePub;
     if (!epubLib) {
       throw new Error("epub.js not available");
@@ -2700,14 +2703,20 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       }
 
       const text = chunks.join("\n\n");
+      const isProtected = !!options.isProtected;
+      let parseError = null;
+      if (!text || text.length < MIN_EPUB_TEXT_LENGTH) {
+        parseError = isProtected ? "drm" : "empty";
+      }
       debugLog("EPUB extracted", { length: text.length });
       return {
         title: metadata?.title || "",
-        text
+        text,
+        parseError
       };
     } catch (err) {
       console.warn("EPUB text extraction failed", err);
-      return { title: "", text: "" };
+      return { title: "", text: "", parseError: "empty" };
     } finally {
       if (book?.destroy) {
         book.destroy();
@@ -2723,8 +2732,9 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     }
     const buffer = await file.arrayBuffer();
     const fileData = cloneArrayBuffer(buffer);
-    const { title, text } = await extractTextFromEpubBuffer(buffer, onStatus);
-    return { title, text, fileData };
+    const isProtected = await detectEpubProtection(buffer);
+    const { title, text, parseError } = await extractTextFromEpubBuffer(buffer, onStatus, { isProtected });
+    return { title, text, fileData, isProtected, parseError };
   }
   async function parseImportFile(file, index, total) {
     const name = file.name || "Untitled";
@@ -2813,16 +2823,36 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         showToast({ title: "EPUB support missing", message: "JSZip is required to import EPUB files.", type: "error" });
         return null;
       }
-      const { text, title, fileData } = await extractTextFromEpub(file, status => setImportStatus(status));
+      const { text, title, fileData, isProtected, parseError } = await extractTextFromEpub(file, status => setImportStatus(status));
       const normalizedEpubText = normalizeText(text);
       debugLog("EPUB extraction result", {
         title: title || baseTitle,
         length: normalizedEpubText.length
       });
-      if (!normalizedEpubText || normalizedEpubText.length < 40) {
-        setImportStatus("No readable text found in EPUB.");
-        showToast({ title: "EPUB unreadable", message: "This EPUB appears to be empty or protected.", type: "error" });
-        return null;
+      if (!normalizedEpubText || normalizedEpubText.length < MIN_EPUB_TEXT_LENGTH) {
+        const isDrm = isProtected || parseError === "drm";
+        const message = isDrm
+          ? "This EPUB appears DRM-protected; extraction isn’t possible locally."
+          : "We couldn’t extract readable text from this EPUB.";
+        setImportStatus(isDrm ? "EPUB is DRM-protected." : "EPUB parse failed.");
+        showToast({ title: isDrm ? "EPUB protected" : "EPUB parse failed", message, type: "error" });
+        return {
+          file,
+          text: "",
+          tokens: [],
+          wordCount: 0,
+          sourceType: "epub",
+          suggestedTitle: title || baseTitle,
+          sourceMeta,
+          contentExtras: {
+            fileData,
+            fileType: file.type || "application/epub+zip"
+          },
+          importError: {
+            type: isDrm ? "drm" : "parse",
+            message
+          }
+        };
       }
       return {
         file,
@@ -2901,17 +2931,22 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     tokens: tokenOverride,
     wordCount: wordCountOverride,
     sourceMeta,
-    readerState
+    readerState,
+    importError
   }) {
     const normalizedText = normalizeText(text);
-    const tokens = Array.isArray(tokenOverride) ? tokenOverride : tokenize(normalizedText);
+    const ignorePhrases = parseCustomIgnorePhrases(
+      readerState?.customIgnorePhrases ?? state.settings.customIgnorePhrases
+    );
+    const sanitizedText = normalizeText(removeCustomIgnorePhrases(normalizedText, ignorePhrases));
+    const tokens = Array.isArray(tokenOverride) ? tokenOverride : tokenize(sanitizedText);
     const wc = typeof wordCountOverride === "number" ? wordCountOverride : countWords(tokens);
     const baseReaderState = {
       currentWordIndex: 0,
       currentPdfPage: 1,
       wpm: state.settings.defaultWpm || 300,
       pause: state.settings.punctuationPause ?? 80,
-      syncRsvpToPage: false
+      syncRsvpToPage: true
     };
     const book = {
       id: uid("book"),
@@ -2931,15 +2966,16 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       wordCount: wc,
       tokenCount: tokens.length,
       contentStored: "idb",
+      importError: importError || null,
       progress: { index: 0, updatedAt: nowISO(), bookmarks: [] },
       readerState: { ...baseReaderState, ...(readerState || {}) },
       stats: { openedAt: null, lastSessionAt: null, totalReadWords: 0 }
     };
-    await persistBookContentToIdb(book.id, normalizedText, tokens, contentExtras || {});
+    await persistBookContentToIdb(book.id, sanitizedText, tokens, contentExtras || {});
     if (sourceType === "epub") {
       debugLog("EPUB saved", {
         bookId: book.id,
-        textLength: normalizedText.length,
+        textLength: sanitizedText.length,
         tokenCount: tokens.length
       });
     }
@@ -2969,9 +3005,10 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
               const epubBuffer = await coerceToArrayBuffer(content.fileData);
               if (epubBuffer) {
                 debugLog("EPUB rehydrate attempt", { bookId });
-                const { text } = await extractTextFromEpubBuffer(epubBuffer);
+                const isProtected = await detectEpubProtection(epubBuffer);
+                const { text, parseError } = await extractTextFromEpubBuffer(epubBuffer, undefined, { isProtected });
                 const normalized = normalizeText(text);
-                if (normalized && normalized.length > 40) {
+                if (normalized && normalized.length > MIN_EPUB_TEXT_LENGTH) {
                   const recoveredTokens = tokenize(normalized);
                   const extras = { ...content };
                   delete extras.bookId;
@@ -2982,10 +3019,18 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
                   await persistBookContentToIdb(bookId, normalized, recoveredTokens, extras);
                   upsertBook({
                     ...book,
+                    importError: null,
                     wordCount: countWords(recoveredTokens),
                     tokenCount: recoveredTokens.length
                   });
                 } else {
+                  const errorType = isProtected || parseError === "drm" ? "drm" : "parse";
+                  const message = errorType === "drm"
+                    ? "This EPUB appears DRM-protected; extraction isn’t possible locally."
+                    : "EPUB extraction failed. Try another file.";
+                  if (!book.importError) {
+                    upsertBook({ ...book, importError: { type: errorType, message } });
+                  }
                   debugLog("EPUB rehydrate empty", { bookId, length: normalized.length });
                 }
               }
@@ -3143,9 +3188,21 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       const meta = document.createElement("div");
       meta.className = "book-meta";
 
+      const titleRow = document.createElement("div");
+      titleRow.className = "book-title-row";
+
       const title = document.createElement("div");
       title.className = "book-title";
       title.textContent = b.title || "Untitled";
+
+      titleRow.appendChild(title);
+      if (b.importError?.type) {
+        const badge = document.createElement("span");
+        badge.className = "book-badge";
+        badge.textContent = b.importError.type === "drm" ? "DRM/Protected" : "Parse failed";
+        if (b.importError?.message) badge.title = b.importError.message;
+        titleRow.appendChild(badge);
+      }
 
       const mins = estimateReadMinutes(b.wordCount || 0, state.settings.defaultWpm || 300);
       const sub = document.createElement("div");
@@ -3161,7 +3218,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         tags.appendChild(span);
       });
 
-      meta.appendChild(title);
+      meta.appendChild(titleRow);
       meta.appendChild(sub);
       if ((b.tags || []).length) meta.appendChild(tags);
 
@@ -3504,6 +3561,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     if (enabled) {
       document.body.classList.add("viewer-fullscreen");
       pdfState.isPseudoFullscreen = true;
+      setPdfFitMode("width");
     } else {
       document.body.classList.remove("viewer-fullscreen");
       pdfState.isPseudoFullscreen = false;
@@ -3523,6 +3581,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
       return;
     }
     if (pdfFullscreenTarget.requestFullscreen) {
+      setPdfFitMode("width");
       pdfFullscreenTarget.requestFullscreen().catch(() => setPdfPseudoFullscreen(true));
     } else {
       setPdfPseudoFullscreen(true);
@@ -3617,14 +3676,8 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     pdfPageInput.value = String(pdfState.page || 1);
     pdfPageInput.max = String(pdfState.total || 1);
     pdfPageTotal.textContent = String(pdfState.total || 1);
-    if (pdfPageSlider) {
-      pdfPageSlider.value = String(pdfState.page || 1);
-      pdfPageSlider.max = String(pdfState.total || 1);
-    }
-    if (pdfFirstBtn) pdfFirstBtn.disabled = pdfState.page <= 1;
     if (pdfPrevBtn) pdfPrevBtn.disabled = pdfState.page <= 1;
     if (pdfNextBtn) pdfNextBtn.disabled = pdfState.page >= pdfState.total;
-    if (pdfLastBtn) pdfLastBtn.disabled = pdfState.page >= pdfState.total;
     if (pdfZoomLabel) pdfZoomLabel.textContent = `${Math.round((pdfState.scale || 1) * 100)}%`;
   }
 
@@ -3831,6 +3884,11 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
 
     if (book.sourceType === "epub") {
       resetPdfViewer();
+      if (book.importError?.type) {
+        showViewerType("empty");
+        setViewerStatus(book.importError.message || "EPUB text unavailable.");
+        return;
+      }
       showViewerType("epub");
       pageViewBookId = null;
       await loadEpubForBook(book);
@@ -3991,7 +4049,7 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
         if (readerBookSub) readerBookSub.textContent = "No readable text found.";
         setRSVPDisplay("No", "•", "Text");
         if (rsvpSubline) {
-          rsvpSubline.textContent = "Try another file or source";
+          rsvpSubline.textContent = book.importError?.message || "Try another file or source";
           rsvpSubline.hidden = false;
         }
         if (btnPlay) btnPlay.disabled = true;
@@ -4117,35 +4175,17 @@ Paragraph two begins here. Commas, periods, and paragraph breaks can pause sligh
     const baseLeft = parseFloat(style.getPropertyValue("--maxLeft")) || 14;
     const baseRight = parseFloat(style.getPropertyValue("--maxRight")) || 20;
 
-    let size = baseSize;
-    let left = baseLeft;
-    let right = baseRight;
+    rsvpWord.style.fontSize = `${baseSize}px`;
+    rsvpFrame.style.setProperty("--rsvpMaxLeft", `${baseLeft}ch`);
+    rsvpFrame.style.setProperty("--rsvpMaxRight", `${baseRight}ch`);
+    rsvpFrame.style.setProperty("--rsvpWordScale", "1");
 
-    const apply = () => {
-      rsvpWord.style.fontSize = `${size}px`;
-      rsvpFrame.style.setProperty("--rsvpMaxLeft", `${left}ch`);
-      rsvpFrame.style.setProperty("--rsvpMaxRight", `${right}ch`);
-    };
-
-    apply();
-    let frameRect = rsvpFrame.getBoundingClientRect();
-    let wordRect = rsvpWord.getBoundingClientRect();
-    let attempts = 0;
-
-    while (wordRect.width > frameRect.width - 8 && attempts < 4) {
-      size = Math.max(baseSize - 8, size - 2);
-      left = Math.max(6, left - 1);
-      right = Math.max(8, right - 1);
-      apply();
-      frameRect = rsvpFrame.getBoundingClientRect();
-      wordRect = rsvpWord.getBoundingClientRect();
-      attempts += 1;
-    }
-
-    if (wordRect.width <= frameRect.width - 8 && attempts === 0) {
-      rsvpWord.style.fontSize = `${baseSize}px`;
-      rsvpFrame.style.setProperty("--rsvpMaxLeft", `${baseLeft}ch`);
-      rsvpFrame.style.setProperty("--rsvpMaxRight", `${baseRight}ch`);
+    const frameRect = rsvpFrame.getBoundingClientRect();
+    const wordRect = rsvpWord.getBoundingClientRect();
+    const available = frameRect.width - 8;
+    if (wordRect.width > available) {
+      const scale = clamp(available / wordRect.width, 0.75, 1);
+      rsvpFrame.style.setProperty("--rsvpWordScale", `${scale}`);
     }
   }
 
