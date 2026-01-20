@@ -99,6 +99,7 @@ button, input, textarea, select {
   --rsvpFontSize: 52px;
   --rsvpFontWeight: 700;
   --rsvpPivot: #ff4b55; /* red letter */
+  --readerFontFamily: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
 }
 
 /* Light mode (auto) */
@@ -517,10 +518,15 @@ button, input, textarea, select {
 .library-layout {
   grid-template-columns: 1fr;
   gap: var(--gap);
+  grid-auto-flow: row;
 }
 
 .library-layout .card {
   box-shadow: none;
+}
+
+#import-section {
+  scroll-margin-top: 110px;
 }
 
 @media (max-width: 1100px) {
@@ -655,6 +661,7 @@ button, input, textarea, select {
   background: color-mix(in srgb, var(--card2) 86%, transparent);
   padding: 16px;
   cursor: pointer;
+  min-height: 150px;
 }
 
 .file-drop:focus-visible {
@@ -1075,6 +1082,7 @@ body.viewer-fullscreen .pdf-viewer {
 .epub-viewer {
   height: 60vh;
   overflow: auto;
+  font-family: var(--readerFontFamily);
 }
 
 .page-view {
@@ -1084,6 +1092,7 @@ body.viewer-fullscreen .pdf-viewer {
   font-size: 17px;
   line-height: 1.65;
   color: var(--text);
+  font-family: var(--readerFontFamily);
 }
 
 .page-view p {
@@ -1132,6 +1141,8 @@ body.viewer-fullscreen .pdf-viewer {
   display: grid;
   place-items: center;
   overflow: hidden;
+  max-width: 100%;
+  margin: 0 auto;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   --rsvpMaxLeft: var(--maxLeft);
@@ -1157,6 +1168,7 @@ body.viewer-fullscreen .pdf-viewer {
   max-width: 100%;
   font-size: var(--rsvpFontSize);
   font-weight: var(--rsvpFontWeight);
+  font-family: var(--readerFontFamily);
   letter-spacing: -0.6px;
   line-height: 1.2;
   user-select: none;
@@ -1320,6 +1332,13 @@ body.viewer-fullscreen .pdf-viewer {
     font-size: 17px;
     padding: 12px 20px;
   }
+  .reader-page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .viewer-controls {
+    width: 100%;
+  }
   :root {
     --rsvpFontSize: 42px;
     --maxLeft: 13ch;
@@ -1446,6 +1465,7 @@ kbd {
   margin-top: 8px;
   font-weight: 650;
   word-break: break-word;
+  font-family: var(--readerFontFamily);
 }
 
 /* ---------- Misc ---------- */

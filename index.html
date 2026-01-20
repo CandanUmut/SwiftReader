@@ -164,7 +164,7 @@
               </div>
             </section>
 
-            <section class="card" aria-label="Import">
+            <section id="import-section" class="card" aria-label="Import">
               <div class="card-header">
                 <h2 class="h2">Import</h2>
                 <div class="chip">Local-only</div>
@@ -211,6 +211,19 @@
                   <div class="form-row">
                     <label class="label" for="import-tags">Tags (comma separated)</label>
                     <input id="import-tags" class="input" type="text" placeholder="productivity, habits" autocomplete="off" />
+                  </div>
+
+                  <div class="form-row">
+                    <label class="checkbox">
+                      <input id="import-auto-remove-headers" type="checkbox" checked />
+                      <span>Auto-remove PDF headers/footers for RSVP</span>
+                    </label>
+                    <div class="form-helper subtle">Per book: strips repeated headers/page numbers when importing PDFs.</div>
+                  </div>
+
+                  <div class="form-row">
+                    <label class="label" for="import-custom-ignore-phrases">Custom ignore phrases (one per line)</label>
+                    <textarea id="import-custom-ignore-phrases" class="textarea" placeholder="Running title"></textarea>
                   </div>
 
                   <div class="inline-actions">
